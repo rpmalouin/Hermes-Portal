@@ -1,5 +1,7 @@
 # Hermes Portal
 
+[![tests](https://github.com/rpmalouin/Hermes-Portal/actions/workflows/tests.yml/badge.svg)](https://github.com/rpmalouin/Hermes-Portal/actions/workflows/tests.yml)
+
 Two standard-library-only Python halves that grew into one repository: **the Hermes
 Portal** — a read-only, ten-domain drill-down over everything the running Hermes agent
 keeps — and the **skill framework** it grew out of, for discovering, registering and

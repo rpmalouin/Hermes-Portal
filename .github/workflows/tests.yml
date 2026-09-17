@@ -1,0 +1,57 @@
+# The two gates this repository ships with, run on the interpreters it claims to support.
+#
+# Linux is deliberate rather than incidental.  The portal's only macOS-shaped pieces are
+# the two health probes (`launchctl`, `lsof`) and the vault's default path, and the test
+# suite patches all three, so a green Linux run is the portability evidence for the copy
+# this is meant to move to a Linux box.  If it goes red, that is a finding, not noise.
+#
+# The 3.11 job is the other one worth watching: pyproject.toml sets the floor at 3.11
+# and the machine this was written on runs 3.12, which happily accepts f-string and
+# PEP 701 syntax that 3.11 rejects.  Ruff's target-version catches the syntax; only a
+# real interpreter catches the rest.
+#
+# Ruff is pinned to the version used locally, so CI and a desktop run cannot disagree.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the lint tool
+        run: python -m pip install --quiet ruff==0.14.4
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Tests
+        run: python -m unittest discover -s tests -t .
+
+      - name: The package installs and its entry points answer
+        run: |
+          python -m pip install --quiet -e .
+          python -m hermes.portal --help > /dev/null
+          hermes --help > /dev/null
