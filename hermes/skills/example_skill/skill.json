@@ -1,0 +1,13 @@
+{
+  "name": "example_skill",
+  "title": "Example Skill",
+  "description": "Uppercases, reverses and measures the length of a text input.",
+  "primary_box": "dev",
+  "raw_category": "text",
+  "tags": ["example", "demo", "text"],
+  "entrypoint": "main.py",
+  "args": {
+    "input": "hello world"
+  },
+  "related": []
+}

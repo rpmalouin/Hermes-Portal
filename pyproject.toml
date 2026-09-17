@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-dashboard"
+version = "0.1.0"
+description = "Modular, standard-library-only skill framework: discover, register and run skills described by skill.json manifests."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ron Malouin" }]
+keywords = ["skills", "framework", "cli", "repl", "stdlib", "subprocess"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.scripts]
+hermes = "hermes.cli.shell:main"
+
+[tool.setuptools]
+# Flat layout: the package lives at the project root exactly as specified.
+packages = ["hermes", "hermes.core", "hermes.cli"]
+
+[tool.setuptools.package-data]
+# skill directories and profiles are data, not importable packages, so they
+# have to be named explicitly for a wheel (or sdist) to carry them.
+hermes = ["profiles/*.json", "skills/*/skill.json", "skills/*/*.py"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+extend-exclude = [".venv", "build", "dist", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RET", "ARG", "PTH"]
+
+[tool.ruff.format]
+quote-style = "double"
