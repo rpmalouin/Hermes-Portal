@@ -305,6 +305,11 @@ python3 -m hermes.portal                 # http://127.0.0.1:8087
 python3 -m hermes.portal --list          # registry summary, no server
 ```
 
+The default is **127.0.0.1:8087**, deliberately: not 8080 (the retired deck's port,
+which is now free and stays free) and not 9119 (Hermes' own dashboard). It binds
+localhost only, and `--port 0` picks a free port when something else already holds
+it.
+
 P0 ships three domains, each with collections, drill-down and search:
 
 | Domain | Source | Reads | Count shown as |

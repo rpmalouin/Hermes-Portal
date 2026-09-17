@@ -29,9 +29,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-PACKAGE_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8080
 SKILL_FILENAME = "SKILL.md"
 HERMES_ORIGIN = "hermes"
 PRUNED_DIRS = frozenset(
