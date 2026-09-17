@@ -5,15 +5,20 @@ Routes::
     /                    portal index (one card per domain)
     /<domain>            domain page; ?box=, ?model=, ?provider= narrow it
     /<domain>/<id>       one record, plus the collections behind it
+    /favorites           the starred records
     /search?q=...        cross-domain search
     /index.json          the index as JSON
     /<domain>.json       a domain's collections as JSON (filters apply)
     /<domain>/<id>.json  one record plus its sections
+    /favorites.json      the starred records as JSON
     /search.json?q=...   search results as JSON
+    /app.js              the portal's script (theme, palette, star toggles)
 
-The handler answers GET only.  There is deliberately no POST: a client that tries
-to change something gets the standard library's 501 rather than a surprise write,
-and no code path here opens a writable handle on anything Hermes owns.
+GET is the only method that reads anything, and every source is opened read-only.
+The single POST is ``/favorites.json``, which stars or unstars one record, and it
+writes exactly one file: the portal's own state document (:mod:`hermes.portal.state`),
+outside every source the portal reads.  Nothing here opens ``state.db``, ``cron/``, a
+skill tree or a vault note for writing, and ``--no-state`` turns even that off.
 """
 
 from __future__ import annotations
@@ -31,11 +36,20 @@ from typing import Any
 from . import render
 from .domains import default_registry
 from .model import Domain, DomainRegistry
-from .sources import as_of
+from .sources import as_of, hermes_root
+from .state import (
+    PortalState,
+    StateError,
+    StateWriteError,
+    default_state_path,
+    favorite_from_payload,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8087
 FILTER_KEYS = ("box", "model", "provider")
+MAX_BODY_BYTES = 8192
+JSON_TYPES = ("application/json", "")
 
 
 def jsonable(value: Any) -> Any:
@@ -117,6 +131,7 @@ def search_payload(
         "built_at": built_at,
         "query": query,
         "limit": limit,
+        "order": [domain.key for domain in registry.all()],
         "counts": {domain.key: len(groups[domain.key]) for domain in registry.all()},
         "groups": jsonable(groups),
     }
@@ -144,6 +159,7 @@ class PortalHandler(BaseHTTPRequestHandler):
     """Serve the portal: HTML at the page routes, JSON at the ``.json`` routes."""
 
     registry: DomainRegistry | None = None
+    state: PortalState | None = None
     built_at: str = ""
     render_limit: int = 20
 
@@ -160,8 +176,36 @@ class PortalHandler(BaseHTTPRequestHandler):
         domains = registry.all()
 
         if not segments:
+            snapshot = self.state.read() if self.state else None
             self._send_html(
-                render.render_index(domains, registry.overviews(), self.built_at)
+                render.render_index(
+                    domains,
+                    registry.overviews(),
+                    self.built_at,
+                    favorites=snapshot.favorites if snapshot else (),
+                )
+            )
+            return
+        if segments == ["app.js"]:
+            self._send(200, "text/javascript; charset=utf-8", render.APP_JS.encode())
+            return
+        if segments[0] in ("favorites", "favorites.json"):
+            if segments[0].endswith(".json"):
+                self._send_json(self._favorites_payload())
+                return
+            snapshot = self.state.read() if self.state else None
+            note = ""
+            if self.state is None:
+                note = "the portal is running with --no-state: starring is disabled"
+            elif snapshot is not None and snapshot.error:
+                note = f"the state file could not be read: {snapshot.error}"
+            self._send_html(
+                render.render_favorites(
+                    snapshot.favorites if snapshot else (),
+                    domains,
+                    self.built_at,
+                    note,
+                )
             )
             return
         if segments == ["index.json"]:
@@ -234,10 +278,143 @@ class PortalHandler(BaseHTTPRequestHandler):
         """Send an HTML page."""
         self._send(200, "text/html; charset=utf-8", html_text.encode("utf-8"))
 
-    def _send_json(self, payload: Any) -> None:
+    def _send_json(self, payload: Any, status: int = 200) -> None:
         """Send a JSON document."""
         body = json.dumps(payload, indent=2, sort_keys=False) + "\n"
-        self._send(200, "application/json; charset=utf-8", body.encode("utf-8"))
+        self._send(status, "application/json; charset=utf-8", body.encode("utf-8"))
+
+    def _favorites_payload(self) -> dict[str, Any]:
+        """The favourites as JSON.  Reading never fails; problems ride in ``error``."""
+        snapshot = self.state.read() if self.state else None
+        favorites = snapshot.favorites if snapshot else ()
+        return {
+            "built_at": self.built_at,
+            "writable": self.state is not None,
+            "path": str(snapshot.path) if snapshot and snapshot.path else "",
+            "error": snapshot.error if snapshot else "",
+            "count": len(favorites),
+            "favorites": [
+                {
+                    "domain": favorite.domain,
+                    "id": favorite.id,
+                    "title": favorite.title,
+                    "added_at": favorite.added_at,
+                }
+                for favorite in favorites
+            ],
+        }
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib naming
+        """Star or unstar one record: the project's only write.
+
+        The validation order is deliberate -- route, then state, then media type,
+        then size, then body, then the record itself -- so a bad request never
+        reaches the filesystem and the response says which check failed.
+        """
+        registry = self.registry
+        if registry is None:
+            self._send_json(
+                {"ok": False, "error": "portal registry not configured"}, 500
+            )
+            return
+
+        parsed = urllib.parse.urlsplit(self.path)
+        segments = [part for part in parsed.path.split("/") if part]
+        key = segments[0] if segments else ""
+        if key.endswith(".json"):
+            key = key[: -len(".json")]
+        if key != "favorites":
+            self._send_json(
+                {"ok": False, "error": f"no POST route for {parsed.path!r}"}, 404
+            )
+            return
+        if self.state is None:
+            self._send_json(
+                {"ok": False, "error": "favourites are disabled (--no-state)"}, 409
+            )
+            return
+
+        content_type = (
+            (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        )
+        if content_type not in JSON_TYPES:
+            self._send_json(
+                {"ok": False, "error": f"send application/json, not {content_type!r}"},
+                415,
+            )
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self._send_json({"ok": False, "error": "empty body"}, 400)
+            return
+        if length > MAX_BODY_BYTES:
+            self._send_json(
+                {"ok": False, "error": f"body is larger than {MAX_BODY_BYTES} bytes"},
+                413,
+            )
+            return
+
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._send_json({"ok": False, "error": f"body is not JSON: {exc}"}, 400)
+            return
+        try:
+            domain_key, record_id, _title, add = favorite_from_payload(payload)
+        except StateError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 400)
+            return
+
+        domain_key = domain_key.strip()
+        if domain_key not in registry:
+            self._send_json(
+                {"ok": False, "error": f"no domain called {domain_key!r}"}, 400
+            )
+            return
+
+        domain = registry.get(domain_key)
+        title = record_id
+        if add is not False:
+            # the title comes from the record, not the client, so the star file
+            # cannot be used to store arbitrary text
+            record = registry.safe_detail(domain, record_id)
+            if record is None:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": f"no record {record_id!r} in domain {domain_key!r}",
+                    },
+                    404,
+                )
+                return
+            title = record.title
+
+        try:
+            snapshot = self.state.toggle(domain_key, record_id, title, add=add)
+        except StateWriteError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 500)
+            return
+        except StateError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 400)
+            return
+
+        starred = f"{domain_key}|{record_id}" in snapshot.keys()  # noqa: SIM118
+        self._send_json(
+            {
+                "ok": True,
+                "starred": starred,
+                "count": len(snapshot.favorites),
+                "path": str(snapshot.path) if snapshot.path else "",
+                "favorites": [
+                    {"domain": favorite.domain, "id": favorite.id}
+                    for favorite in snapshot.favorites
+                ],
+            }
+        )
 
     def _not_found(self, what: str) -> None:
         """Send a 404, rendered like every other page."""
@@ -263,6 +440,9 @@ def serve(
     registry: DomainRegistry | None = None,
     vault_root: Path | None = None,
     graph_db: Path | None = None,
+    state: PortalState | None = None,
+    state_path: Path | None = None,
+    no_state: bool = False,
 ) -> int:
     """Build the registry (if needed) and serve the portal until interrupted.
 
@@ -277,6 +457,11 @@ def serve(
             caller that already has one does not pay for a second walk.
         vault_root: Obsidian vault to index (default documented in the vault domain).
         graph_db: Code graph database; default ``.code-review-graph/graph.db``.
+        state: Pre-built favourites store; built here when omitted.
+        state_path: Where to keep favourites; default
+            ``<hermes root>/portal/state.json``.
+        no_state: Serve without a store, so the star buttons report 409 and nothing
+            in the process can write anything.
 
     Returns:
         ``0`` on a clean shutdown.
@@ -290,7 +475,10 @@ def serve(
             vault_root=vault_root,
             graph_db=graph_db,
         )
+    if state is None and not no_state:
+        state = PortalState(state_path or default_state_path(hermes_root(hermes_home)))
     PortalHandler.registry = registry
+    PortalHandler.state = state if not no_state else None
     PortalHandler.built_at = built_at
 
     server = ThreadingHTTPServer((host, port), PortalHandler)
@@ -329,6 +517,16 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="read every profile's skills too (default: yes)",
+    )
+    parser.add_argument(
+        "--state",
+        default=None,
+        help="favourites file (default: <hermes root>/portal/state.json)",
+    )
+    parser.add_argument(
+        "--no-state",
+        action="store_true",
+        help="do not keep favourites: the star buttons report that writing is off",
     )
     parser.add_argument(
         "--graph-db",
@@ -384,4 +582,6 @@ def main(argv: list[str] | None = None) -> int:
         registry=registry,
         vault_root=args.vault,
         graph_db=args.graph_db,
+        state_path=Path(args.state) if args.state else None,
+        no_state=args.no_state,
     )

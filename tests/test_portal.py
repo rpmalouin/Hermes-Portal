@@ -893,7 +893,9 @@ class TestRender(unittest.TestCase):
         self.assertIn("rows in the sessions table of state.db", page)
         self.assertIn("entries in cron/jobs.json", page)
         self.assertIn("Built STAMP", page)
-        self.assertIn("Read-only", page)
+        # P3 added one write path, and the index says so rather than claiming
+        # the whole portal is read-only
+        self.assertIn("the only thing written is your favourites", page)
 
     def test_domain_page_shows_sources_as_of_and_counts(self) -> None:
         domain = self.registry.get("skills")
@@ -1121,7 +1123,8 @@ class TestServer(unittest.TestCase):
 
             self.assertEqual(tree_snapshot(root), before, "the portal wrote something")
 
-    def test_post_is_refused(self) -> None:
+    def test_only_the_favourites_route_accepts_a_post(self) -> None:
+        """Every other path refuses to be written, with a reason in the body."""
         with tempfile.TemporaryDirectory() as tmp:
             root = make_hermes_root(Path(tmp))
             with run_portal(root) as base:
@@ -1130,7 +1133,9 @@ class TestServer(unittest.TestCase):
                 )
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(request, timeout=10)
-            self.assertEqual(caught.exception.code, 501)
+                body = json.loads(caught.exception.read().decode())
+        self.assertEqual(caught.exception.code, 404)
+        self.assertIn("no POST route", body["error"])
 
     def test_filters_are_read_from_the_query_string(self) -> None:
         self.assertEqual(server.filters_from(""), {})

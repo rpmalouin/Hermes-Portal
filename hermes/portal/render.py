@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from string import Template
 
 from .model import Collection, Domain, Picker, Record
+from .state import Favorite
 
 BODY_PREVIEW = 400
 _CODE_RE = re.compile(r"`([^`]+)`")
@@ -31,44 +32,148 @@ PAGE = Template(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#16162a">
 <title>$title</title>
+<script>
+    // Theme before first paint: an explicit choice wins, otherwise the system's.
+    (function () {
+        try {
+            var saved = localStorage.getItem("portal-theme");
+            var system = window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light" : "dark";
+            document.documentElement.dataset.theme = saved || system;
+        } catch (err) { document.documentElement.dataset.theme = "dark"; }
+    })();
+</script>
 <style>
-    :root { color-scheme: dark; }
+    :root {
+        color-scheme: dark;
+        --bg: #16162a;
+        --fg: #e9eaf0;
+        --panel: #1b1d33;
+        --panel-2: #1e2140;
+        --border: #272a45;
+        --border-2: #2c3055;
+        --border-3: #23264a;
+        --muted: #8d92ad;
+        --muted-2: #7d829c;
+        --muted-3: #6b7089;
+        --soft: #b6bad0;
+        --sub: #a9aec6;
+        --link: #7fb2ff;
+        --pill-bg: #23264a;
+        --pill-fg: #c3c8e0;
+        --badge-bg: #1f3a5f;
+        --badge-fg: #bcd6ff;
+        --warn: #e7c07b;
+        --code-bg: #14152a;
+        --nav-bg: #1e2140;
+        --here-bg: #2b3a63;
+        --here-fg: #dce7ff;
+        --here-border: #4a6bb0;
+        --btn-fg: #dce7ff;
+        --accent: #b8763f;
+        --shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+    }
+    :root[data-theme="light"] {
+        color-scheme: light;
+        --bg: #f6f4f1;
+        --fg: #23211f;
+        --panel: #ffffff;
+        --panel-2: #faf7f4;
+        --border: #e2ddd7;
+        --border-2: #d6cfc7;
+        --border-3: #eae5df;
+        --muted: #6f6a64;
+        --muted-2: #7a746d;
+        --muted-3: #8b857d;
+        --soft: #4a453f;
+        --sub: #5b554e;
+        --link: #a2501e;
+        --pill-bg: #f1ece6;
+        --pill-fg: #5b554e;
+        --badge-bg: #f6e6d8;
+        --badge-fg: #8a4a15;
+        --warn: #8a5a10;
+        --code-bg: #f4f1ed;
+        --nav-bg: #ffffff;
+        --here-bg: #f0e2d4;
+        --here-fg: #7c3f10;
+        --here-border: #c98f52;
+        --btn-fg: #7c3f10;
+        --accent: #b8763f;
+        --shadow: 0 18px 40px rgba(90, 70, 50, 0.16);
+    }
+    * { box-sizing: border-box; }
     body {
-        background: #16162a; color: #e9eaf0; margin: 0; padding: 1.75rem 2rem 4rem;
+        background: var(--bg); color: var(--fg); margin: 0; padding: 1.75rem 2rem 4rem;
         font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
         line-height: 1.5;
     }
-    a { color: #7fb2ff; text-decoration: none; }
+    a { color: var(--link); text-decoration: none; }
     a:hover { text-decoration: underline; }
     header.top {
-        align-items: center; border-bottom: 1px solid #272a45; display: flex;
-        flex-wrap: wrap; gap: 1rem; margin: 0 0 1.5rem; padding: 0 0 1rem;
+        align-items: center; border-bottom: 1px solid var(--border); display: flex;
+        flex-wrap: wrap; gap: 0.75rem; margin: 0 0 1.5rem; padding: 0 0 1rem;
     }
     header.top .brand { font-size: 1.15rem; font-weight: 700; letter-spacing: 0.01em; }
     nav.domains { display: flex; flex-wrap: wrap; gap: 0.85rem; }
     nav.domains a {
-        background: #1e2140; border: 1px solid #2c3055; border-radius: 999px;
-        font-size: 0.85rem; padding: 0.25rem 0.75rem;
+        background: var(--nav-bg); border: 1px solid var(--border-2);
+        border-radius: 999px; font-size: 0.85rem; padding: 0.25rem 0.75rem;
     }
-    nav.domains a.here { background: #2b3a63; border-color: #4a6bb0; color: #dce7ff; }
+    nav.domains a.here {
+        background: var(--here-bg); border-color: var(--here-border);
+        color: var(--here-fg);
+    }
     form.search { display: flex; gap: 0.5rem; margin-left: auto; }
     form.search input {
-        background: #1e2140; border: 1px solid #2c3055; border-radius: 8px;
-        color: #e9eaf0; min-width: 14rem; padding: 0.4rem 0.6rem;
+        background: var(--nav-bg); border: 1px solid var(--border-2);
+        border-radius: 8px;
+        color: var(--fg); min-width: 14rem; padding: 0.4rem 0.6rem;
     }
-    form.search button {
-        background: #2b3a63; border: 1px solid #4a6bb0; border-radius: 8px;
-        color: #dce7ff; padding: 0.4rem 0.8rem;
+    form.search button, .ghost {
+        background: var(--here-bg); border: 1px solid var(--here-border);
+        border-radius: 8px; color: var(--btn-fg); cursor: pointer;
+        font-size: 0.85rem; padding: 0.4rem 0.8rem;
+    }
+    .ghost {
+        background: var(--nav-bg); border-color: var(--border-2);
+        color: var(--fg);
     }
     h1 { font-size: 1.9rem; margin: 0 0 0.35rem; }
     h2 { font-size: 1.25rem; margin: 2rem 0 0.5rem; }
-    .crumbs { color: #8d92ad; font-size: 0.85rem; margin: 0 0 0.6rem; }
-    .lede { color: #b6bad0; margin: 0 0 1.25rem; max-width: 70ch; }
+    .crumbs { color: var(--muted); font-size: 0.85rem; margin: 0 0 0.6rem; }
+    .lede { color: var(--soft); margin: 0 0 1.25rem; max-width: 70ch; }
     .panel {
-        background: #1b1d33; border: 1px solid #272a45; border-radius: 12px;
+        background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
         margin: 0 0 1.1rem; padding: 1.1rem 1.25rem;
     }
+    .layout {
+        align-items: start; display: grid; gap: 1.25rem;
+        grid-template-columns: minmax(0, 1fr);
+    }
+    @media (min-width: 1200px) {
+        .layout.with-rail { grid-template-columns: minmax(0, 1fr) 21rem; }
+    }
+    .rail {
+        display: flex; flex-direction: column; gap: 1.1rem;
+        position: sticky; top: 1rem;
+    }
+    .rail .panel { margin: 0; }
+    .rail h3 {
+        font-size: 0.78rem; letter-spacing: 0.09em; margin: 0 0 0.6rem;
+        text-transform: uppercase; color: var(--muted);
+    }
+    .rail .stat {
+        display: flex; justify-content: space-between; gap: 1rem;
+        font-size: 0.88rem;
+    }
+    .rail .stat + .stat {
+        border-top: 1px solid var(--border-3); margin-top: 0.4rem;
+        padding-top: 0.4rem;
+    }
+    .rail .stat b { font-variant-numeric: tabular-nums; }
     .grid {
         display: grid; gap: 1.1rem;
         grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
@@ -78,88 +183,154 @@ PAGE = Template(
         margin: 0 0 0.6rem;
     }
     .counts .headline { font-size: 1.9rem; font-weight: 700; }
-    .counts .def { color: #8d92ad; font-size: 0.82rem; }
+    .counts .def { color: var(--muted); font-size: 0.82rem; }
     .pill {
-        background: #23264a; border: 1px solid #2f3363; border-radius: 999px;
-        color: #c3c8e0; font-size: 0.75rem; padding: 0.15rem 0.6rem;
+        background: var(--pill-bg); border: 1px solid var(--border-3);
+        border-radius: 999px;
+        color: var(--pill-fg); font-size: 0.75rem; padding: 0.15rem 0.6rem;
     }
     .row {
-        border-top: 1px solid #23264a; display: flex; flex-wrap: wrap;
-        gap: 0.5rem 0.9rem; padding: 0.6rem 0;
+        border-top: 1px solid var(--border-3); display: flex; flex-wrap: wrap;
+        gap: 0.5rem 0.9rem; padding: 0.6rem 0; align-items: flex-start;
     }
     .row:first-of-type { border-top: none; }
     .row .title { font-weight: 600; }
-    .row .sub { color: #a9aec6; flex: 1 1 22rem; font-size: 0.88rem; }
+    .row .sub { color: var(--sub); flex: 1 1 22rem; font-size: 0.88rem; }
     .badges { display: flex; flex-wrap: wrap; gap: 0.35rem; }
     .badge {
-        background: #1f3a5f; border-radius: 6px; color: #bcd6ff;
+        background: var(--badge-bg); border-radius: 6px; color: var(--badge-fg);
         font-size: 0.72rem; padding: 0.1rem 0.45rem;
     }
-    .meta { color: #7d829c; font-size: 0.78rem; }
+    .meta { color: var(--muted-2); font-size: 0.78rem; }
     .notes {
-        color: #e7c07b; font-size: 0.82rem; margin: 0.5rem 0 0;
+        color: var(--warn); font-size: 0.82rem; margin: 0.5rem 0 0;
         padding-left: 1.1rem;
     }
-    .sources { color: #7d829c; font-size: 0.78rem; margin: 0.55rem 0 0; }
+    .sources { color: var(--muted-2); font-size: 0.78rem; margin: 0.55rem 0 0; }
     table.fields { border-collapse: collapse; margin: 0.4rem 0 0; width: 100%; }
     table.fields th, table.fields td {
-        border-top: 1px solid #23264a; font-size: 0.86rem;
+        border-top: 1px solid var(--border-3); font-size: 0.86rem;
         padding: 0.35rem 0.6rem 0.35rem 0; text-align: left;
-        vertical-align: top;
+        vertical-align: top; word-break: break-word;
     }
     table.fields th {
-        color: #8d92ad; font-weight: 500; white-space: nowrap; width: 12rem;
+        color: var(--muted); font-weight: 500; white-space: nowrap; width: 12rem;
     }
     pre.body {
-        background: #14152a; border: 1px solid #272a45; border-radius: 8px;
-        color: #cfd3e6; font-size: 0.8rem; margin: 0.5rem 0 0; max-height: 26rem;
+        background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+        color: var(--fg); font-size: 0.8rem; margin: 0.5rem 0 0; max-height: 26rem;
         overflow: auto; padding: 0.75rem; white-space: pre-wrap; word-break: break-word;
     }
-    details.body summary { color: #8d92ad; cursor: pointer; font-size: 0.82rem; }
-    .empty { color: #8d92ad; font-style: italic; }
-    footer { color: #6b7089; font-size: 0.78rem; margin-top: 2.5rem; }
+    details.body summary { color: var(--muted); cursor: pointer; font-size: 0.82rem; }
+    .empty { color: var(--muted); font-style: italic; }
+    footer { color: var(--muted-3); font-size: 0.78rem; margin-top: 2.5rem; }
     form.picker {
         align-items: center; display: flex; flex-wrap: wrap; gap: 0.6rem;
         margin: 0.4rem 0 1rem;
     }
-    form.picker label { color: #8d92ad; font-size: 0.85rem; }
+    form.picker label { color: var(--muted); font-size: 0.85rem; }
     form.picker select {
-        background: #1e2140; border: 1px solid #2c3055; border-radius: 8px;
-        color: #e9eaf0; font-size: 0.9rem; min-width: 18rem;
+        background: var(--nav-bg); border: 1px solid var(--border-2);
+        border-radius: 8px;
+        color: var(--fg); font-size: 0.9rem; min-width: 18rem;
         padding: 0.4rem 0.5rem;
     }
     form.picker button {
-        background: #2b3a63; border: 1px solid #4a6bb0; border-radius: 8px;
-        color: #dce7ff; padding: 0.4rem 0.7rem;
+        background: var(--here-bg); border: 1px solid var(--here-border);
+        border-radius: 8px; color: var(--btn-fg); padding: 0.4rem 0.7rem;
     }
     .grid .card {
-        background: #1e2140; border: 1px solid #2c3055; border-radius: 12px;
-        padding: 1rem 1.1rem; transition: transform 0.15s ease;
+        background: var(--panel-2); border: 1px solid var(--border-2);
+        border-radius: 12px; padding: 1rem 1.1rem; transition: transform 0.15s ease;
     }
-    .grid .card:hover { transform: translateY(-2px); border-color: #4a6bb0; }
+    .grid .card:hover { transform: translateY(-2px); border-color: var(--here-border); }
     .grid .card .box {
-        color: #8d92ad; font-size: 0.7rem; letter-spacing: 0.05em;
+        color: var(--muted); font-size: 0.7rem; letter-spacing: 0.05em;
         text-transform: uppercase;
     }
     .grid .card h3 { font-size: 1.05rem; margin: 0.35rem 0 0.45rem; }
-    .grid .card .desc { color: #b6bad0; font-size: 0.85rem; line-height: 1.45; }
+    .grid .card .desc { color: var(--soft); font-size: 0.85rem; line-height: 1.45; }
     .grid .card .desc code {
-        background: #23264a; border-radius: 4px; padding: 0 0.25rem;
+        background: var(--pill-bg); border-radius: 4px;
+        padding: 0 0.25rem;
     }
     .grid .card .src {
-        color: #6b7089; font-family: ui-monospace, monospace; font-size: 0.68rem;
+        color: var(--muted-3); font-family: ui-monospace, monospace; font-size: 0.68rem;
         margin-top: 0.7rem; word-break: break-all;
     }
+    button.star {
+        background: none; border: none; color: var(--muted-2); cursor: pointer;
+        font-size: 1.05rem; line-height: 1; padding: 0.1rem 0.3rem;
+    }
+    button.star::after { content: "\u2606"; }
+    button.star[aria-pressed="true"] { color: var(--accent); }
+    button.star[aria-pressed="true"]::after { content: "\u2605"; }
+    button.star:hover { color: var(--accent); }
+    .star-head { display: flex; align-items: center; gap: 0.5rem; }
+    #palette {
+        align-items: flex-start; background: rgba(8, 8, 18, 0.55);
+        display: flex; inset: 0; justify-content: center; padding-top: 12vh;
+        position: fixed; z-index: 20;
+    }
+    #palette[hidden] { display: none; }
+    #palette .box {
+        background: var(--panel); border: 1px solid var(--border-2);
+        border-radius: 14px;
+        box-shadow: var(--shadow); max-height: 70vh; overflow: hidden;
+        width: min(46rem, 92vw); display: flex; flex-direction: column;
+    }
+    #palette input {
+        background: transparent; border: none; border-bottom: 1px solid var(--border);
+        color: var(--fg); font-size: 1rem; padding: 0.9rem 1.1rem; width: 100%;
+    }
+    #palette input:focus { outline: none; }
+    #palette .results { overflow: auto; padding: 0.4rem 0.5rem 0.7rem; }
+    #palette .hit {
+        border-radius: 8px; cursor: pointer; display: flex; gap: 0.7rem;
+        padding: 0.5rem 0.6rem; align-items: baseline;
+    }
+    #palette .hit.active { background: var(--here-bg); }
+    #palette .hit .dom {
+        color: var(--muted); font-size: 0.72rem; min-width: 5.5rem;
+        text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    #palette .hit .what { flex: 1; font-size: 0.92rem; }
+    #palette .hit .why { color: var(--muted-2); font-size: 0.78rem; }
+    #palette .hint {
+        border-top: 1px solid var(--border); color: var(--muted-3);
+        font-size: 0.75rem; padding: 0.5rem 1.1rem;
+    }
+    #toast {
+        background: var(--panel); border: 1px solid var(--border-2);
+        border-radius: 10px;
+        bottom: 1.25rem; box-shadow: var(--shadow); color: var(--fg);
+        font-size: 0.85rem;
+        left: 50%; max-width: 90vw; opacity: 0; padding: 0.5rem 0.9rem;
+        position: fixed; transform: translate(-50%, 1rem);
+        transition: opacity 0.2s ease;
+        pointer-events: none; z-index: 30;
+    }
+    #toast.show { opacity: 1; transform: translate(-50%, 0); }
 </style>
 </head>
 <body>
+<script src="/app.js"></script>
 $nav
 $body
 <footer>
-    Read-only: the portal opens every source in read-only mode and never writes.
     Counts carry their definitions; sources and read time are shown per collection.
-    Built $built_at.
+    Favourites are the portal's only write, kept in its own state file. Built $built_at.
 </footer>
+<div id="palette" hidden>
+    <div class="box">
+        <input type="search" placeholder="Search every domain&hellip;"
+               aria-label="Search">
+        <div class="results"><p class="empty">Type to search.</p></div>
+        <div class="hint">&uarr;&darr; to move &middot; Enter to open
+        &middot; Esc to close</div>
+    </div>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
 """
@@ -188,7 +359,7 @@ def _nav(domains: Sequence[Domain], current: str = "", query: str = "") -> str:
         here = ' class="here"' if domain.key == current else ""
         links.append(f'<a href="/{key}"{here}>{html.escape(domain.title)}</a>')
     joined = "".join(links)
-    placeholder = "Search every domain\u2026"
+    placeholder = "Search every domain&hellip;"
     return (
         '<header class="top">\n'
         '  <div class="brand"><a href="/">Hermes Portal</a></div>\n'
@@ -198,6 +369,10 @@ def _nav(domains: Sequence[Domain], current: str = "", query: str = "") -> str:
         f' placeholder="{placeholder}">\n'
         '    <button type="submit">Search</button>\n'
         "  </form>\n"
+        '  <button class="ghost" type="button" id="palette-open" '
+        'title="Search (Ctrl+K)">\u2318K</button>\n'
+        '  <button class="ghost" type="button" id="theme-toggle" '
+        'title="Light or dark">\u25d1</button>\n'
         "</header>"
     )
 
@@ -210,7 +385,11 @@ def _page(
     current: str = "",
     query: str = "",
 ) -> str:
-    """Wrap *body* in the shell."""
+    """Wrap *body* in the shell.
+
+    The shell renders no state of its own: the rail is part of *body*, and the star
+    buttons hydrate from ``/favorites.json`` client-side.
+    """
     return PAGE.substitute(
         title=html.escape(title),
         nav=_nav(domains, current, query),
@@ -229,6 +408,22 @@ def _badges(record: Record) -> str:
         if str(badge).strip()
     )
     return f'<div class="badges">{pills}</div>'
+
+
+def star_button(domain_key: str, record_id: str, title: str) -> str:
+    """Render a star toggle for one record.
+
+    The button always renders unstarred: a small script reads ``/favorites.json``
+    once and marks the starred ones, which keeps the renderer free of state and the
+    page cacheable.  Without JavaScript the button does nothing -- the write path is
+    a nicety, not the only way to use the portal.
+    """
+    target = html.escape(f"{domain_key}|{record_id}", quote=True)
+    label = html.escape(title, quote=True)
+    return (
+        f'<button class="star" type="button" data-fav="{target}" data-title="{label}" '
+        f'aria-pressed="false" aria-label="Star {label}" title="Star"></button>'
+    )
 
 
 def _record_row(record: Record, domain_key: str, with_body: bool = False) -> str:
@@ -265,7 +460,8 @@ def _record_row(record: Record, domain_key: str, with_body: bool = False) -> str
             meta = f'<div class="meta">{bits}</div>'
     return (
         '<div class="row">'
-        f'<div><div class="title">{title}</div>{meta}</div>'
+        f'<div><div class="title">{star_button(domain_key, record.id, record.title)}'
+        f"{title}</div>{meta}</div>"
         f"{sub}{_badges(record)}{body}"
         "</div>"
     )
@@ -389,8 +585,9 @@ def render_index(
     domains: Sequence[Domain],
     overviews: Sequence[Collection],
     built_at: str,
+    favorites: Sequence[Favorite] = (),
 ) -> str:
-    """Render the portal index: one card per domain."""
+    """Render the portal index: one card per domain, plus the rail."""
     cards = []
     for domain, overview in zip(domains, overviews, strict=False):
         extras = "".join(
@@ -417,14 +614,125 @@ def render_index(
             + (f'<ul class="notes">{notes}</ul>' if notes else "")
             + "</section>"
         )
+    rail = _rail(domains, overviews, favorites)
     body = (
+        '<div class="layout with-rail">'
+        "<div>"
         "<h1>Hermes Portal</h1>"
-        '<p class="lede">A read-only, drill-down view over everything Hermes keeps: '
-        "skills, sessions and cron today. Every count is labelled with the rule that "
-        "produced it, and every collection names the sources it read.</p>"
+        '<p class="lede">A drill-down view over everything Hermes keeps: skills, '
+        "sessions, cron, usage, health, logs, the Obsidian vault and the code graph. "
+        "Every count is labelled with the rule that produced it, every collection "
+        "names the sources it read, and the only thing written is your favourites.</p>"
         f'<div class="grid">{"".join(cards)}</div>'
+        "</div>"
+        f"{rail}"
+        "</div>"
     )
     return _page("Hermes Portal", body, domains, built_at)
+
+
+def _rail(
+    domains: Sequence[Domain],
+    overviews: Sequence[Collection],
+    favorites: Sequence[Favorite] = (),
+) -> str:
+    """The right rail: usage totals, favourites, and every domain at a glance."""
+    by_key: dict[str, Collection] = {
+        domain.key: overview
+        for domain, overview in zip(domains, overviews, strict=False)
+    }
+    blocks: list[str] = []
+
+    usage = by_key.get("usage")
+    if usage is not None and usage.metrics:
+        rows = "".join(
+            f'<div class="stat"><span>{html.escape(str(label))}</span>'
+            f"<b>{html.escape(str(value))}</b></div>"
+            for label, value in usage.metrics[:5]
+        )
+        blocks.append(
+            '<section class="panel"><h3>Usage overview</h3>'
+            f'{rows}<div class="meta">as of {html.escape(usage.as_of)}</div></section>'
+        )
+
+    blocks.append(_favorites_panel(favorites))
+
+    glance = []
+    for domain in domains:
+        overview = by_key.get(domain.key)
+        if overview is None:
+            continue
+        glance.append(
+            f'<div class="stat"><span><a href="/{html.escape(domain.key)}">'
+            f"{html.escape(domain.title)}</a></span>"
+            f"<b>{overview.count.value:,}</b></div>"
+        )
+    blocks.append(
+        '<section class="panel"><h3>At a glance</h3>' + "".join(glance) + "</section>"
+    )
+    return f'<aside class="rail">{"".join(blocks)}</aside>'
+
+
+def _favorites_panel(favorites: Sequence[Favorite]) -> str:
+    """The favourites block, with a link to the full page when there are any."""
+    if not favorites:
+        return (
+            '<section class="panel"><h3>Favourites</h3>'
+            '<p class="empty">Star anything with the \u2606 beside it.</p></section>'
+        )
+    rows = "".join(
+        '<div class="stat"><span><a href="/'
+        f'{html.escape(favorite.domain)}/{html.escape(favorite.id, quote=True)}">'
+        f"{rich(favorite.title)}</a></span>"
+        f'<span class="meta">{html.escape(favorite.domain)}</span></div>'
+        for favorite in favorites[:8]
+    )
+    more = (
+        f'<div class="meta"><a href="/favorites">all {len(favorites)}</a></div>'
+        if len(favorites) > 8
+        else ""
+    )
+    return f'<section class="panel"><h3>Favourites</h3>{rows}{more}</section>'
+
+
+def render_favorites(
+    favorites: Sequence[Favorite],
+    domains: Sequence[Domain],
+    built_at: str,
+    state_note: str = "",
+) -> str:
+    """Render the favourites page: everything starred, grouped by domain."""
+    if not favorites:
+        inner = '<p class="empty">Nothing is starred yet.</p>'
+    else:
+        rows = "".join(
+            '<div class="row">'
+            f'<div><div class="title">'
+            f"{star_button(favorite.domain, favorite.id, favorite.title)}"
+            f'<a href="/{html.escape(favorite.domain)}/'
+            f'{html.escape(favorite.id, quote=True)}">{rich(favorite.title)}</a>'
+            f'</div><div class="meta">{html.escape(favorite.id)}</div></div>'
+            f'<div class="sub"><a href="/{html.escape(favorite.domain)}">'
+            f"{html.escape(favorite.domain)}</a></div>"
+            f'<div class="meta">starred {html.escape(favorite.added_at)}</div>'
+            "</div>"
+            for favorite in favorites
+        )
+        inner = rows
+    note = (
+        f'<ul class="notes"><li>{html.escape(state_note)}</li></ul>'
+        if state_note
+        else ""
+    )
+    body = (
+        '<div class="crumbs"><a href="/">Hermes Portal</a> / Favourites</div>'
+        f"<h1>Favourites</h1>"
+        f'<p class="lede">{len(favorites)} starred record(s). The portal keeps '
+        f"these in its own state file and never writes to anything it reads.</p>"
+        f'<section class="panel">{inner}</section>'
+        f"{note}"
+    )
+    return _page("Favourites", body, domains, built_at)
 
 
 def render_domain(
@@ -488,7 +796,8 @@ def render_detail(
         f'<div class="crumbs"><a href="/">Hermes Portal</a> / '
         f'<a href="/{html.escape(domain.key)}">{html.escape(domain.title)}</a> / '
         f"{html.escape(record.id)}</div>"
-        f"<h1>{html.escape(record.title)}</h1>"
+        f'<div class="star-head"><h1>{html.escape(record.title)}</h1>'
+        f"{star_button(domain.key, record.id, record.title)}</div>"
         f'<p class="lede">{rich(record.subtitle)}</p>'
         f"{_badges(record)}{links}{table}{body}{sections_html}"
     )
@@ -552,3 +861,213 @@ def render_not_found(domains: Sequence[Domain], built_at: str, what: str) -> str
         + "</p>"
     )
     return _page("Not found", body, domains, built_at)
+
+
+APP_JS = r"""
+/* The portal's only script: theme, the command palette, and the star toggles.
+   No dependencies, no state of its own beyond the theme in localStorage. */
+(function () {
+    "use strict";
+
+    // -- theme ------------------------------------------------------------
+    var toggle = document.getElementById("theme-toggle");
+    function current() {
+        return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    }
+    if (toggle) {
+        toggle.textContent = current() === "light" ? "\u25d0" : "\u25d1";
+        toggle.addEventListener("click", function () {
+            var next = current() === "light" ? "dark" : "light";
+            document.documentElement.dataset.theme = next;
+            toggle.textContent = next === "light" ? "\u25d0" : "\u25d1";
+            try { localStorage.setItem("portal-theme", next); }
+            catch (err) { /* private mode */ }
+        });
+    }
+
+    // -- toast ------------------------------------------------------------
+    var toast = document.getElementById("toast");
+    var toastTimer = null;
+    function say(message) {
+        if (!toast) { return; }
+        toast.textContent = message;
+        toast.classList.add("show");
+        if (toastTimer) { clearTimeout(toastTimer); }
+        toastTimer = setTimeout(function () { toast.classList.remove("show"); }, 2600);
+    }
+
+    // -- favourites -------------------------------------------------------
+    function key(domain, id) { return domain + "|" + id; }
+
+    function hydrate() {
+        var buttons = document.querySelectorAll("[data-fav]");
+        if (!buttons.length) { return; }
+        fetch("/favorites.json").then(function (response) { return response.json(); })
+            .then(function (data) {
+                var starred = {};
+                (data.favorites || []).forEach(function (favorite) {
+                    starred[key(favorite.domain, favorite.id)] = true;
+                });
+                buttons.forEach(function (button) {
+                    button.setAttribute(
+                        "aria-pressed", starred[button.dataset.fav] ? "true" : "false"
+                    );
+                });
+            })
+            .catch(function () { /* the portal still works unstarred */ });
+    }
+
+    document.addEventListener("click", function (event) {
+        var button = event.target.closest("[data-fav]");
+        if (!button) { return; }
+        event.preventDefault();
+        var parts = button.dataset.fav.split("|");
+        var domain = parts.shift();
+        var payload = {
+            domain: domain,
+            id: parts.join("|"),
+            title: button.dataset.title || "",
+            action: button.getAttribute("aria-pressed") === "true" ? "remove" : "add"
+        };
+        button.disabled = true;
+        fetch("/favorites.json", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }).then(function (response) {
+            return response.json().then(function (data) {
+                return { ok: response.ok, data: data };
+            });
+        }).then(function (result) {
+            if (!result.ok) {
+                say(result.data.error || "could not save that");
+                return;
+            }
+            button.setAttribute("aria-pressed", result.data.starred ? "true" : "false");
+            say(result.data.starred ? "Starred" : "Unstarred");
+        }).catch(function () {
+            say("could not reach the portal");
+        }).then(function () { button.disabled = false; });
+    });
+
+    // -- command palette --------------------------------------------------
+    var overlay = document.getElementById("palette");
+    var opener = document.getElementById("palette-open");
+    if (!overlay) { return; }
+    var field = overlay.querySelector("input");
+    var results = overlay.querySelector(".results");
+    var hits = [];
+    var active = -1;
+    var timer = null;
+
+    function close() {
+        overlay.hidden = true;
+        active = -1;
+    }
+
+    function open() {
+        overlay.hidden = false;
+        field.value = "";
+        results.innerHTML = '<p class="empty">Type to search.</p>';
+        hits = [];
+        field.focus();
+    }
+
+    function mark() {
+        hits.forEach(function (hit, index) {
+            hit.el.classList.toggle("active", index === active);
+        });
+        if (hits[active]) { hits[active].el.scrollIntoView({ block: "nearest" }); }
+    }
+
+    function render(data) {
+        var groups = data.groups || {};
+        var order = data.order || Object.keys(groups);
+        hits = [];
+        results.textContent = "";
+        var any = false;
+        order.forEach(function (domain) {
+            (groups[domain] || []).forEach(function (record) {
+                any = true;
+                var el = document.createElement("div");
+                el.className = "hit";
+                var dom = document.createElement("span");
+                dom.className = "dom";
+                dom.textContent = domain;
+                var what = document.createElement("span");
+                what.className = "what";
+                what.textContent = record.title;
+                var why = document.createElement("span");
+                why.className = "why";
+                why.textContent = record.subtitle || "";
+                el.appendChild(dom);
+                el.appendChild(what);
+                el.appendChild(why);
+                var url = "/" + encodeURIComponent(domain) + "/" +
+                    encodeURIComponent(record.id);
+                el.addEventListener("click", function () { window.location = url; });
+                results.appendChild(el);
+                hits.push({ el: el, url: url });
+            });
+        });
+        if (!any) {
+            results.innerHTML = '<p class="empty">No matches.</p>';
+        }
+        active = hits.length ? 0 : -1;
+        mark();
+    }
+
+    function search(query) {
+        if (!query) {
+            results.innerHTML = '<p class="empty">Type to search.</p>';
+            hits = [];
+            return;
+        }
+        fetch("/search.json?limit=6&q=" + encodeURIComponent(query))
+            .then(function (response) { return response.json(); })
+            .then(render)
+            .catch(function () {
+                results.innerHTML = '<p class="empty">Search failed.</p>';
+            });
+    }
+
+    if (opener) { opener.addEventListener("click", open); }
+    field.addEventListener("input", function () {
+        if (timer) { clearTimeout(timer); }
+        var query = field.value.trim();
+        timer = setTimeout(function () { search(query); }, 140);
+    });
+    overlay.addEventListener("click", function (event) {
+        if (event.target === overlay) { close(); }
+    });
+    document.addEventListener("keydown", function (event) {
+        var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+            event.preventDefault();
+            overlay.hidden ? open() : close();
+            return;
+        }
+        if (event.key === "/" && !typing && overlay.hidden) {
+            event.preventDefault();
+            open();
+            return;
+        }
+        if (overlay.hidden) { return; }
+        if (event.key === "Escape") { close(); }
+        else if (event.key === "ArrowDown" && hits.length) {
+            event.preventDefault();
+            active = (active + 1) % hits.length;
+            mark();
+        } else if (event.key === "ArrowUp" && hits.length) {
+            event.preventDefault();
+            active = (active - 1 + hits.length) % hits.length;
+            mark();
+        } else if (event.key === "Enter" && hits[active]) {
+            event.preventDefault();
+            window.location = hits[active].url;
+        }
+    });
+
+    hydrate();
+})();
+"""

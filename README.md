@@ -24,10 +24,11 @@ hermes/
   cli/
     __init__.py
     shell.py         interactive `hermes>` REPL
-  portal/            read-only drill-down over everything Hermes keeps
+  portal/            drill-down over everything Hermes keeps (one write path)
     __init__.py
     model.py         Domain / Collection / Record / Count (counts carry rules)
-    sources.py       read-only SQLite, root resolution, formatting
+    sources.py       read-only SQLite, root resolution, formatting, a TTL cache
+    state.py         favourites: the portal's own state file and the only writer
     render.py        one generic page shape for every domain
     server.py        routes, JSON endpoints, handler
     __main__.py      python -m hermes.portal
@@ -48,6 +49,7 @@ tests/
   test_portal.py     59 tests, the portal incl. the skills gallery
   test_portal_domains.py 31 tests, usage/health/logs + whole-registry invariants
   test_portal_heavy.py 35 tests, the vault and the code graph
+  test_portal_ui.py  47 tests, favourites (the write path), theme and palette
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -302,14 +304,18 @@ filter the dropdown cannot offer (a category path, or a value that matched nothi
 is shown as a disabled "current filter" entry rather than being hidden.
 ## Hermes Portal
 
-A second web view, and the start of the system around everything Hermes keeps. It
-is **read-only**: every adapter opens its source read-only, and there is no POST
-route, so a client trying to change something gets the standard library's 501.
+A second web view, and the start of the system around everything Hermes keeps.
+Every **source** is opened read-only -- SQLite with `mode=ro` plus `query_only`, HTTP
+probes as GETs, files read from the end -- and there is exactly **one** write in the
+project: starring a record, which updates the portal's own state document and nothing
+else. Every other POST is refused by name.
 
 ```sh
 python3 -m hermes.portal                 # http://127.0.0.1:8087
 .venv/bin/hermes-portal --port 8087      # installed console script
 python3 -m hermes.portal --list          # registry summary, no server
+.venv/bin/hermes-portal --no-state       # serve with writing switched off
+.venv/bin/hermes-portal --state /tmp/p.json   # put the favourites file elsewhere
 ```
 
 The default is **127.0.0.1:8087**, deliberately: not 8080 (the retired deck's port,
@@ -353,6 +359,31 @@ previews and impact analysis are theirs; what the portal adds is a stable, linka
 of what the store contains. A graph node's page shows its edges out and in, its flow
 memberships, its risk row and its community.
 
+### The interface (P3)
+
+The mockup's UI on top of real data, with one new idea: a record can be **starred**.
+
+* **Favourites are the portal's only write.** `POST /favorites.json` takes
+  `{domain, id, action}` and updates `<hermes root>/portal/state.json` (override with
+  `--state`, disable with `--no-state`). The request is validated in a fixed order --
+  route, state, media type, body size, JSON, domain, record -- so a malformed request
+  never reaches the filesystem, and writes are atomic (temp file plus `os.replace`,
+  mode `0600`) so a crash cannot leave a half-written list. The title stored is the
+  **record's** title, never the client's, so the file cannot be used as scratch space.
+  Star buttons ship unpressed and hydrate from `GET /favorites.json`, which keeps the
+  renderer free of state; with JavaScript off the portal still works unstarred.
+* **The theme is a real light mode, not an inverted dark one.** One set of CSS custom
+  properties per theme, chosen in `<head>` before first paint (saved choice, else the
+  system preference), toggled from the header and remembered in `localStorage`.
+* **Ctrl/⌘-K opens a command palette** over whatever is loaded (`/search.json`,
+  debounced, `↑`/`↓`/Enter/Esc), and `/` opens it anywhere outside a text field. Every
+  page also carries a right rail: usage totals, favourites, and each domain's headline
+  count.
+* **No app-mode window.** The mockup's final piece was a chrome-less window, which
+  means launching a Chromium browser with `--app=`. This machine's default browser is
+  not Chromium, so that would be a flag that silently does nothing; the theme toggle
+  and the rail get the same effect inside a normal tab.
+
 **Usage** is the single home for cost and token rollups: totals, by day, by model,
 by provider and the most expensive sessions (each linking into the sessions view that
 filters to it). The sessions domain keeps the index and each session's own usage --
@@ -386,9 +417,12 @@ domain, and every `.json` variant returns the same data — `/index.json`,
 * **Every collection names its sources and read time**, and a missing source is
   marked `MISSING` rather than silently empty. Adapter failures become notes on
   the page — one broken domain cannot take the portal down.
-* **The portal never writes.** SQLite is opened `mode=ro` with `query_only`, no
-  files are created and no POST is served. A test hashes the whole fake Hermes
-  tree before and after exercising every route and fails on any difference.
+* **The portal writes one file, and the blast radius is tested.** SQLite is
+  opened `mode=ro` with `query_only`; the only writer is the favourites store, and a
+  test hashes the whole fake Hermes tree around a POST to prove the change set is
+  exactly `portal/state.json`. Reading never creates the file, so a read-only home
+  still serves (stars simply do not persist, and the page says so); `--no-state`
+  turns writing off entirely.
 * **Per-profile stores are disclosed, not merged.** Profiles keep their own
   `state.db` and `cron/executions.db`; the sessions page says so (2 sessions in
   the running profile, 6 in another) instead of quietly reading one of them.
