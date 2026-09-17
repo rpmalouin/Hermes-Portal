@@ -26,10 +26,8 @@ dependencies = []
 
 [project.scripts]
 hermes = "hermes.cli.shell:main"
-# `hermes-deck` is kept as an alias: the Skill Deck's card grid and box picker are
-# now the portal's skills gallery, so this launches the portal rather than a second
-# server. `hermes-portal` is the canonical name.
-hermes-deck = "hermes.portal.server:main"
+# `hermes-portal` is the canonical name.  The `hermes-deck` alias is retired: with
+# the Skill Deck folded into the portal it was only a second name for this entry.
 hermes-portal = "hermes.portal.server:main"
 
 [tool.setuptools]

@@ -387,7 +387,7 @@ separate server are gone. What moved where:
 | `skill_deck.discover_skills` / `resolve_hermes_roots` / `split_frontmatter` | `hermes/core/skill_trees.py` (view-free) |
 | `skill_deck.filter_cards` (box **or** category path) | `skill_trees.filter_cards`, now used by the portal too, so `?box=mlops/evaluation` works there as well |
 | `python -m hermes.web.skill_deck --box creative` | `python -m hermes.portal` then `/skills?box=creative` |
-| `hermes-deck` | still exists as an **alias** that launches the portal |
+| `hermes-deck` | **retired** — with the deck folded in, it was only a second name for this same entry point |
 
 One behaviour changed on purpose: a box filter that matches nothing used to be
 silently ignored, which showed unfiltered skills under a filtered URL. It now

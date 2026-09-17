@@ -522,7 +522,7 @@ def _record_row(record: Record, domain_key: str, with_body: bool = False) -> str
 
 
 def render_card(record: Record, domain_key: str) -> str:
-    """Render one record as a gallery card (the deck's card, driven by a Record)."""
+    """Render one record as a gallery card: the skills gallery's card, from a Record."""
     target = record.href or (
         f"/{html.escape(domain_key)}/{html.escape(record.id, quote=True)}"
     )
