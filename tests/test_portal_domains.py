@@ -683,7 +683,14 @@ class ConvertedDomainsPrimitivesTestCase(BaseP1):
 
     def setUp(self) -> None:
         super().setUp()
-        make_launch_agents(self.root)
+        self.agents = make_launch_agents(self.root)
+        # The fixture is what these builders must read.  Without the patch they read
+        # the host's own ~/Library/LaunchAgents, which holds real Hermes plists on the
+        # machine this was written on and does not exist on Linux -- the case passed
+        # here and failed in CI for that reason alone.
+        agents_patch = mock.patch.object(health_domain, "LAUNCH_AGENTS", self.agents)
+        agents_patch.start()
+        self.addCleanup(agents_patch.stop)
         self.usage = usage_domain.UsageDomain(hermes_home=self.root)
         self.health = health_domain.HealthDomain(hermes_home=self.root)
         self.sessions = sessions_domain.SessionsDomain(hermes_home=self.root)
