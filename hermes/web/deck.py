@@ -43,7 +43,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -115,6 +115,8 @@ class DeckData:
     cards: list[Card] = field(default_factory=list)
     sources: list[SourceStatus] = field(default_factory=list)
     dropped: int = 0
+    filters: tuple[str, ...] = ()
+    hidden: int = 0
 
 
 def _unquote(value: str) -> str:
@@ -339,6 +341,38 @@ def _dedupe(cards: Iterable[Card]) -> tuple[list[Card], int]:
     return kept, dropped
 
 
+def _matches_box(card: Card, wanted: str) -> bool:
+    """``True`` when *card* sits inside the box or category path *wanted*."""
+    if card.box.lower() == wanted:
+        return True
+    category = card.category.lower()
+    return category == wanted or category.startswith(f"{wanted}/")
+
+
+def filter_cards(cards: Sequence[Card], boxes: Sequence[str]) -> tuple[list[Card], int]:
+    """Keep the cards inside any of *boxes*.
+
+    A value matches a card's ``box`` (``creative``) or a ``category`` path
+    (``creative/ascii-art``), case-insensitively; a category path also
+    selects everything below it.  An empty *boxes* keeps every card.
+
+    Args:
+        cards: Cards to filter.
+        boxes: Box or category names to keep.
+
+    Returns:
+        ``(kept, hidden)`` where *hidden* is how many cards the filter
+        removed.
+    """
+    wanted = [value.strip().lower() for value in boxes if value.strip()]
+    if not wanted:
+        return list(cards), 0
+    kept = [
+        card for card in cards if any(_matches_box(card, target) for target in wanted)
+    ]
+    return kept, len(cards) - len(kept)
+
+
 def framework_cards(root: Path) -> list[Card]:
     """Cards for the ``skill.json`` skills registered under *root*."""
     runtime = Runtime(Path(root))
@@ -365,6 +399,7 @@ def build_deck(
     profile: str | None = None,
     all_profiles: bool = False,
     include_framework: bool = True,
+    boxes: Sequence[str] = (),
 ) -> DeckData:
     """Collect the cards and source provenance for the deck.
 
@@ -375,11 +410,13 @@ def build_deck(
         profile: Named Hermes profile to read.
         all_profiles: Also read every profile under the Hermes home.
         include_framework: Include this project's ``skill.json`` skills.
+        boxes: Keep only cards in these boxes or category paths; the
+            source counts still report what every root contained.
 
     Returns:
-        A :class:`DeckData` with de-duplicated cards, one
-        :class:`SourceStatus` per scanned root, and the number of dropped
-        duplicates.
+        A :class:`DeckData` with de-duplicated, filtered cards, one
+        :class:`SourceStatus` per scanned root, the number of dropped
+        duplicates and the number of cards the filter hid.
     """
     cards: list[Card] = []
     sources: list[SourceStatus] = []
@@ -404,7 +441,15 @@ def build_deck(
         return (card.origin != FRAMEWORK_ORIGIN, card.box, card.name.lower())
 
     kept.sort(key=sort_key)
-    return DeckData(cards=kept, sources=sources, dropped=dropped)
+
+    filtered, hidden = filter_cards(kept, boxes)
+    return DeckData(
+        cards=filtered,
+        sources=sources,
+        dropped=dropped,
+        filters=tuple(boxes),
+        hidden=hidden,
+    )
 
 
 HTML_TEMPLATE = Template(
@@ -464,7 +509,7 @@ HTML_TEMPLATE = Template(
     <h1>Hermes Skill Deck</h1>
     <div class="stats">
         <strong>$total</strong> skills ($framework framework, $hermes hermes)
-        across <strong>$boxes</strong> boxes$dropped
+        across <strong>$boxes</strong> boxes$dropped$filtered
     </div>
     <details class="sources">
         <summary>Sources ($present/$searched present)</summary>
@@ -518,6 +563,12 @@ def render_page(data: DeckData) -> str:
     """Render the whole deck page as HTML (escaped at every interpolation)."""
     if data.cards:
         cards = "\n".join(render_card(card) for card in data.cards)
+    elif data.filters:
+        wanted = html.escape(", ".join(data.filters), quote=True)
+        cards = (
+            '    <p class="empty">No skills in '
+            f"--box {wanted}. Drop the filter, or use --list to see the boxes.</p>"
+        )
     else:
         cards = (
             '    <p class="empty">No skills found. Run this from the project root, '
@@ -543,11 +594,26 @@ def render_page(data: DeckData) -> str:
         dropped=(
             f" \u2014 {data.dropped} duplicate card(s) skipped" if data.dropped else ""
         ),
+        filtered=(
+            f" \u2014 in {'boxes' if len(data.filters) > 1 else 'box'} "
+            f"{html.escape(', '.join(data.filters), quote=True)}"
+            f" ({data.hidden} hidden)"
+            if data.filters
+            else ""
+        ),
         present=sum(1 for status in data.sources if status.present),
         searched=len(data.sources),
         source_items=source_items,
         cards=cards,
     )
+
+
+def _count_by_box(cards: Sequence[Card]) -> dict[str, int]:
+    """Count cards per box, for the JSON payload and ``--list``."""
+    counts: dict[str, int] = {}
+    for card in cards:
+        counts[card.box] = counts.get(card.box, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def json_payload(data: DeckData) -> dict[str, Any]:
@@ -561,6 +627,9 @@ def json_payload(data: DeckData) -> dict[str, Any]:
             "hermes": sum(1 for card in data.cards if card.origin == HERMES_ORIGIN),
             "boxes": len({card.box for card in data.cards}),
             "duplicates_dropped": data.dropped,
+            "box_filter": list(data.filters),
+            "hidden_by_filter": data.hidden,
+            "by_box": _count_by_box(data.cards),
         },
         "sources": [
             {
@@ -622,11 +691,19 @@ def describe(data: DeckData) -> str:
         f"({sum(1 for c in data.cards if c.origin == FRAMEWORK_ORIGIN)} framework, "
         f"{sum(1 for c in data.cards if c.origin == HERMES_ORIGIN)} hermes), "
         f"{data.dropped} duplicate card(s) skipped",
-        "sources:",
     ]
+    if data.filters:
+        selector = " --box ".join(data.filters)
+        lines.append(f"filter: --box {selector} ({data.hidden} hidden)")
+    lines.append("sources:")
     for status in data.sources:
         marker = "" if status.present else "  [MISSING]"
         lines.append(f"  {status.found:>4}  {status.label}: {status.path}{marker}")
+    counts = _count_by_box(data.cards)
+    if counts:
+        lines.append("boxes:")
+        for box, count in counts.items():
+            lines.append(f"  {count:>4}  {box}")
     return "\n".join(lines)
 
 
@@ -638,6 +715,7 @@ def serve(
     profile: str | None = None,
     all_profiles: bool = False,
     include_framework: bool = True,
+    boxes: Sequence[str] = (),
 ) -> int:
     """Build the deck and serve it until interrupted.
 
@@ -649,6 +727,7 @@ def serve(
         profile: Named Hermes profile to read skills from.
         all_profiles: Also read every profile under the Hermes home.
         include_framework: Include this project's ``skill.json`` skills.
+        boxes: Keep only cards in these boxes or category paths.
 
     Returns:
         ``0`` on a clean shutdown.
@@ -659,6 +738,7 @@ def serve(
         profile=profile,
         all_profiles=all_profiles,
         include_framework=include_framework,
+        boxes=boxes,
     )
     DeckHandler.data = data
 
@@ -711,6 +791,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="show only Hermes skills; skip this project's skill.json registry",
     )
     parser.add_argument(
+        "--box",
+        action="append",
+        default=None,
+        metavar="BOX",
+        help="only show skills in this box or category path, e.g. creative "
+        "or mlops/evaluation (repeatable)",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         help="print what would be shown and exit without serving",
@@ -731,6 +819,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = build_parser().parse_args(argv)
     root = args.root if args.root is not None else PACKAGE_DIR
+    boxes = tuple(args.box or ())
 
     try:
         data = build_deck(
@@ -739,6 +828,7 @@ def main(argv: list[str] | None = None) -> int:
             profile=args.profile,
             all_profiles=args.all_profiles,
             include_framework=not args.no_framework,
+            boxes=boxes,
         )
     except OSError as exc:
         print(f"error: cannot build deck: {exc}", file=sys.stderr)
@@ -756,6 +846,7 @@ def main(argv: list[str] | None = None) -> int:
         profile=args.profile,
         all_profiles=args.all_profiles,
         include_framework=not args.no_framework,
+        boxes=boxes,
     )
 
 

@@ -20,7 +20,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -838,3 +838,202 @@ class TestDeckServer(unittest.TestCase):
             sorted(card["name"] for card in payload["cards"]),
             ["ascii-art", "beta", "linked", "standalone"],
         )
+
+
+class TestDeckBoxFilter(unittest.TestCase):
+    """The --box filter: box names, category paths, repeats, and reporting."""
+
+    @staticmethod
+    def card(name: str, box: str, category: str | None = None) -> deck.Card:
+        return deck.Card(
+            name=name,
+            title=name,
+            description="d",
+            box=box,
+            category=category if category is not None else box,
+            origin="hermes",
+            source="running hermes",
+            path=f"/tmp/{name}/SKILL.md",
+        )
+
+    def setUp(self) -> None:
+        self.cards = [
+            self.card("ascii-art", "creative", "creative/ascii-art"),
+            self.card("p5js", "creative", "creative/p5js"),
+            self.card("harness", "mlops", "mlops/evaluation/evaluating-llms-harness"),
+            self.card("vllm", "mlops", "mlops/inference/serving-llms-vllm"),
+            self.card("example_skill", "dev", "text"),
+        ]
+
+    def test_no_filter_keeps_everything(self) -> None:
+        kept, hidden = deck.filter_cards(self.cards, [])
+        self.assertEqual(len(kept), 5)
+        self.assertEqual(hidden, 0)
+
+    def test_blank_values_are_ignored(self) -> None:
+        kept, hidden = deck.filter_cards(self.cards, ["", "   "])
+        self.assertEqual(len(kept), 5)
+        self.assertEqual(hidden, 0)
+
+    def test_box_name_matches_case_insensitively(self) -> None:
+        kept, hidden = deck.filter_cards(self.cards, ["CREATIVE"])
+        self.assertEqual([card.name for card in kept], ["ascii-art", "p5js"])
+        self.assertEqual(hidden, 3)
+
+    def test_category_path_narrows_within_a_box(self) -> None:
+        kept, _ = deck.filter_cards(self.cards, ["mlops/inference"])
+        self.assertEqual([card.name for card in kept], ["vllm"])
+
+    def test_category_path_selects_only_its_own_branch(self) -> None:
+        kept, _ = deck.filter_cards(self.cards, ["mlops/evaluation"])
+        self.assertEqual([card.name for card in kept], ["harness"])
+        self.assertEqual(
+            deck.filter_cards(self.cards, ["mlops/evaluation/deeper"])[0], []
+        )
+
+    def test_repeated_boxes_are_a_union(self) -> None:
+        kept, hidden = deck.filter_cards(self.cards, ["creative", "dev"])
+        self.assertEqual(
+            [card.name for card in kept], ["ascii-art", "p5js", "example_skill"]
+        )
+        self.assertEqual(hidden, 2)
+
+    def test_no_match_hides_everything(self) -> None:
+        kept, hidden = deck.filter_cards(self.cards, ["nope"])
+        self.assertEqual(kept, [])
+        self.assertEqual(hidden, 5)
+
+    def test_build_deck_filters_but_sources_still_report_full_scans(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            data = deck.build_deck(
+                PROJECT_ROOT,
+                hermes_home=home,
+                all_profiles=True,
+                include_framework=False,
+                boxes=["creative"],
+            )
+            self.assertEqual([card.name for card in data.cards], ["ascii-art"])
+            self.assertEqual(data.hidden, 3)
+            self.assertEqual(data.filters, ("creative",))
+            self.assertEqual([status.found for status in data.sources], [3, 1])
+
+    def test_render_shows_the_active_filter(self) -> None:
+        page = deck.render_page(
+            deck.DeckData(
+                cards=[self.card("ascii-art", "creative")],
+                sources=[],
+                filters=("creative",),
+                hidden=7,
+            )
+        )
+        self.assertIn("in box creative", page)
+        self.assertIn("(7 hidden)", page)
+
+    def test_render_pluralises_multiple_boxes(self) -> None:
+        page = deck.render_page(
+            deck.DeckData(
+                cards=[self.card("ascii-art", "creative")],
+                sources=[],
+                filters=("creative", "apple"),
+                hidden=3,
+            )
+        )
+        self.assertIn("in boxes creative, apple", page)
+
+    def test_render_explains_an_empty_filtered_deck(self) -> None:
+        page = deck.render_page(deck.DeckData(filters=("nope",), hidden=5))
+        self.assertIn("No skills in --box nope", page)
+        self.assertNotIn("or point --hermes-home", page)
+
+    def test_render_escapes_the_filter_value(self) -> None:
+        page = deck.render_page(deck.DeckData(filters=("<script>",), hidden=1))
+        self.assertNotIn("<script>", page)
+        self.assertIn("&lt;script&gt;", page)
+
+    def test_json_reports_filter_state_and_box_breakdown(self) -> None:
+        payload = deck.json_payload(
+            deck.DeckData(
+                cards=[self.card("ascii-art", "creative")],
+                sources=[],
+                filters=("creative",),
+                hidden=4,
+            )
+        )
+        self.assertEqual(payload["counts"]["box_filter"], ["creative"])
+        self.assertEqual(payload["counts"]["hidden_by_filter"], 4)
+        self.assertEqual(payload["counts"]["by_box"], {"creative": 1})
+
+    def test_describe_reports_filter_hidden_and_boxes(self) -> None:
+        data = deck.DeckData(
+            cards=[self.card("ascii-art", "creative")],
+            sources=[],
+            filters=("creative",),
+            hidden=9,
+        )
+        summary = deck.describe(data)
+        self.assertIn("filter: --box creative (9 hidden)", summary)
+        self.assertIn("   1  creative", summary)
+
+    def test_cli_box_is_repeatable_and_case_insensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = deck.main(
+                    [
+                        "--list",
+                        "--no-framework",
+                        "--all-profiles",
+                        "--hermes-home",
+                        str(home),
+                        "--box",
+                        "CREATIVE",
+                        "--box",
+                        "beta",
+                    ]
+                )
+            printed = out.getvalue()
+
+        self.assertEqual(code, 0)
+        self.assertIn("2 skills", printed)
+        self.assertIn("filter: --box CREATIVE --box beta (2 hidden)", printed)
+        self.assertIn("   1  creative", printed)
+        self.assertIn("   1  beta", printed)
+
+    def test_cli_without_box_lists_every_box(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                deck.main(["--list", "--no-framework", "--hermes-home", str(home)])
+            printed = out.getvalue()
+
+        self.assertIn("3 skills", printed)
+        self.assertIn("boxes:", printed)
+        for box in ("standalone", "creative", "linked-skill"):
+            self.assertIn(box, printed)
+        self.assertNotIn("filter:", printed)
+
+    def test_cli_box_with_no_matches_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                deck.main(
+                    [
+                        "--list",
+                        "--no-framework",
+                        "--hermes-home",
+                        str(home),
+                        "--box",
+                        "absent",
+                    ]
+                )
+        printed = out.getvalue()
+        self.assertIn("0 skills", printed)
+        self.assertIn("filter: --box absent (3 hidden)", printed)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

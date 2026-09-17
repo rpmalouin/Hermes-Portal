@@ -28,7 +28,7 @@ hermes/
     deck.py          Skill Deck web UI: this project + the running Hermes agent
 tests/
   __init__.py
-  test_smoke.py      67 tests, unittest only
+  test_smoke.py      84 tests, unittest only
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -261,16 +261,41 @@ python3 -m hermes.web.deck --list     # print what would be shown, then exit
 
 `/` renders the card grid, `/skills.json` returns the same cards as JSON so a
 script can check the load instead of counting `<div>`s. Flags: `--root`,
-`--hermes-home`, `--profile`, `--all-profiles`, `--no-framework`, `--list`,
-`--host`, `--port`.
+`--hermes-home`, `--profile`, `--all-profiles`, `--no-framework`, `--box`,
+`--list`, `--host`, `--port`.
+
+### Filtering by box
+
+`--box` keeps one box of the deck and is repeatable; a value with a `/` in it is
+a **category path**, which narrows further:
+
+```sh
+python3 -m hermes.web.deck --list --box software-development   # 28 skills
+python3 -m hermes.web.deck --list --box mlops/evaluation       # 2 skills
+python3 -m hermes.web.deck --box creative --box apple          # 21 skills, 133 hidden
+python3 -m hermes.web.deck --list                              # lists every box + count
+```
+
+Matching is case-insensitive on the card's box (`creative`) or its category path
+(`creative/ascii-art`); a category path also selects everything below it. The
+page and `/skills.json` both report the active filter and how many cards it hid
+(`hidden_by_filter`), and the *source* counts keep reporting what every root
+contained, so a filtered deck still says how much of the whole it is showing.
+`--list` with no `--box` prints the box breakdown, which is the easiest way to
+find a name to pass in.
 
 Which skills appear:
 
 | Source | Read from | Count on the machine this was built on |
 | --- | --- | --- |
 | framework | `<root>/skills/*/skill.json` | 1 (`example_skill`) |
-| hermes | `$HERMES_HOME/skills/**/SKILL.md` | 152 — the running profile's whole set |
-| extra profiles | `$HERMES_HOME/profiles/*/skills`, with `--all-profiles` | +1 further unique name |
+| hermes | `$HERMES_HOME/skills/**/SKILL.md` | the running profile's whole set |
+| extra profiles | `$HERMES_HOME/profiles/*/skills`, with `--all-profiles` | further unique names |
+
+Counts move as skills are added or removed — during the session this deck was
+built, the running profile went from 152 to 153 skills while the server was up,
+and the deck simply reported the new number. Treat any figure here as a
+snapshot, not a constant.
 
 Hermes sets `$HERMES_HOME` itself: in a live session it points at the running
 profile directory, whose `skills/` directory *is* the skill set the agent has.
@@ -299,7 +324,7 @@ self-explaining.
 
 ```sh
 cd <project-root>
-python3 -m unittest discover -s tests -t .   # 67 tests, ~1.9s
+python3 -m unittest discover -s tests -t .   # 84 tests, ~1.9s
 python3 -m unittest tests.test_smoke         # same suite
 python3 tests/test_smoke.py                  # works directly too
 
