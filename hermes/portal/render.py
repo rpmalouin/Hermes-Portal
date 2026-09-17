@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import html
 import re
+import urllib.parse
 from collections.abc import Mapping, Sequence
 from string import Template
 
 from .model import Collection, Domain, Picker, Record
 from .state import Favorite
+from .taxonomy import Coverage
 
 BODY_PREVIEW = 400
 _CODE_RE = re.compile(r"`([^`]+)`")
@@ -311,6 +313,37 @@ PAGE = Template(
         pointer-events: none; z-index: 30;
     }
     #toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .tiles {
+        display: grid; gap: 0.9rem;
+        grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+    }
+    .tile {
+        border-radius: 14px; color: #fff; display: flex; flex-direction: column;
+        gap: 0.45rem; min-height: 9.5rem; padding: 0.95rem 1.05rem;
+        box-shadow: var(--shadow);
+    }
+    .tile-head { align-items: baseline; display: flex; gap: 0.55rem; }
+    .tile-head .emoji { font-size: 1.3rem; line-height: 1; }
+    .tile-head h3 { flex: 1; font-size: 1.05rem; margin: 0; }
+    .tile-head .tile-count {
+        font-size: 1.45rem; font-variant-numeric: tabular-nums; font-weight: 700;
+    }
+    .tile-blurb { color: rgba(255, 255, 255, 0.9); font-size: 0.84rem; margin: 0; }
+    .tile .meta { color: rgba(255, 255, 255, 0.78); }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: auto; }
+    .chip {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        border-radius: 999px; color: #fff; font-size: 0.72rem; padding: 0.08rem 0.5rem;
+    }
+    .chip:hover { background: rgba(255, 255, 255, 0.3); text-decoration: none; }
+    .chip b { font-variant-numeric: tabular-nums; opacity: 0.85; }
+    .chips.on-panel .chip {
+        background: var(--pill-bg); border-color: var(--border-3);
+        color: var(--pill-fg);
+    }
+    .chips.on-panel .chip:hover { background: var(--here-bg); }
+    .chips.on-panel { margin-top: 0.5rem; }
 </style>
 </head>
 <body>
@@ -581,13 +614,77 @@ def render_collection(collection: Collection, domain_key: str) -> str:
     )
 
 
+def render_tiles(cov: Coverage) -> str:
+    """Render the curated box tiles: eight groups over the real boxes.
+
+    Each tile is a CSS gradient (no image assets), names its member boxes with their
+    own counts, and links to that box's filtered view. The coverage line underneath is
+    the point of the section: it says how much of the real tree the mapping covers and
+    lists everything it does not, so the grouping can be judged rather than trusted.
+    """
+    tiles = []
+    for row in cov.rows:
+        group = row.group
+        members = " ".join(
+            f'<a class="chip" href="/skills?box={urllib.parse.quote(name)}">'
+            f"{html.escape(name)} <b>{count:,}</b></a>"
+            for name, count in row.present[:6]
+        )
+        more = (
+            f'<span class="meta">+{len(row.present) - 6} more boxes</span>'
+            if len(row.present) > 6
+            else ""
+        )
+        stale = (
+            f'<div class="meta">mapping names {len(row.missing)} box(es) that '
+            f"no longer exist: {html.escape(', '.join(row.missing))}</div>"
+            f"exist: {html.escape(', '.join(row.missing))}</div>"
+            if row.missing
+            else ""
+        )
+        tiles.append(
+            '<section class="tile" '
+            f'style="background: linear-gradient(135deg, {group.gradient[0]}, '
+            f'{group.gradient[1]})">'
+            f'<div class="tile-head"><span class="emoji">{group.emoji}</span>'
+            f"<h3>{html.escape(group.title)}</h3>"
+            f'<span class="tile-count">{row.skills:,}</span></div>'
+            f'<p class="tile-blurb">{html.escape(group.blurb)}</p>'
+            f'<div class="chips">{members} {more}</div>'
+            f"{stale}</section>"
+        )
+    ungrouped = ""
+    if cov.ungrouped:
+        chips = " ".join(
+            f'<a class="chip" href="/skills?box={urllib.parse.quote(name)}">'
+            f"{html.escape(name)} <b>{count:,}</b></a>"
+            for name, count in cov.ungrouped
+        )
+        ungrouped = (
+            '<p class="lede">Not in a group yet '
+            f"({len(cov.ungrouped)} box(es), {sum(c for _n, c in cov.ungrouped):,} "
+            f"skill(s)) -- each still links to its own view:</p>"
+            f'<div class="chips on-panel">{chips}</div>'
+        )
+    return (
+        '<section class="panel"><h2>Skill boxes</h2>'
+        f'<p class="lede">{len(cov.rows)} groups over the {cov.boxes} boxes the tree '
+        f"actually has, covering {cov.covered_boxes} of them and "
+        f"{cov.covered_skills:,} of {cov.skills:,} skills. The grouping is ours; the "
+        "counts are the tree's.</p>"
+        f'<div class="tiles">{"".join(tiles)}</div>'
+        f"{ungrouped}</section>"
+    )
+
+
 def render_index(
     domains: Sequence[Domain],
     overviews: Sequence[Collection],
     built_at: str,
     favorites: Sequence[Favorite] = (),
+    tiles: str = "",
 ) -> str:
-    """Render the portal index: one card per domain, plus the rail."""
+    """Render the portal index: tiles, one card per domain, plus the rail."""
     cards = []
     for domain, overview in zip(domains, overviews, strict=False):
         extras = "".join(
@@ -623,6 +720,7 @@ def render_index(
         "sessions, cron, usage, health, logs, the Obsidian vault and the code graph. "
         "Every count is labelled with the rule that produced it, every collection "
         "names the sources it read, and the only thing written is your favourites.</p>"
+        f"{tiles}"
         f'<div class="grid">{"".join(cards)}</div>'
         "</div>"
         f"{rail}"

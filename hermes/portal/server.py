@@ -44,6 +44,7 @@ from .state import (
     default_state_path,
     favorite_from_payload,
 )
+from .taxonomy import coverage
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8087
@@ -137,6 +138,27 @@ def search_payload(
     }
 
 
+def box_counts(registry: DomainRegistry) -> dict[str, int]:
+    """Box name -> skill count, read from the skills domain's own boxes collection.
+
+    The tiles are arranged from this and nothing else, so a tile's number cannot
+    disagree with the skills page: there is one measurement, made by the domain.
+    """
+    if "skills" not in registry:
+        return {}
+    for collection in registry.safe_collections(registry.get("skills")):
+        if collection.key != "boxes":
+            continue
+        counts: dict[str, int] = {}
+        for record in collection.records:
+            try:
+                counts[record.title] = int(dict(record.fields).get("skills", "0"))
+            except (TypeError, ValueError):
+                continue
+        return counts
+    return {}
+
+
 def describe(registry: DomainRegistry) -> str:
     """Printable summary of what the portal will serve."""
     lines = []
@@ -177,12 +199,14 @@ class PortalHandler(BaseHTTPRequestHandler):
 
         if not segments:
             snapshot = self.state.read() if self.state else None
+            counts = box_counts(registry)
             self._send_html(
                 render.render_index(
                     domains,
                     registry.overviews(),
                     self.built_at,
                     favorites=snapshot.favorites if snapshot else (),
+                    tiles=render.render_tiles(coverage(counts)) if counts else "",
                 )
             )
             return

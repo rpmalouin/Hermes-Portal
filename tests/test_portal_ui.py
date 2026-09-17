@@ -39,7 +39,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes.portal import render, server  # noqa: E402
+from hermes.portal import model as registry_module  # noqa: E402
+from hermes.portal import render, server, taxonomy  # noqa: E402
 from hermes.portal.domains import health as health_domain  # noqa: E402
 from hermes.portal.domains import logs as logs_domain  # noqa: E402
 from hermes.portal.state import (  # noqa: E402
@@ -403,6 +404,144 @@ class BannerTestCase(unittest.TestCase):
             line = server.write_policy(PortalState(Path(tmp) / "state.json"))
         self.assertIn("Read-only except favourites", line)
         self.assertIn("state.json", line)
+
+
+class TilesTestCase(unittest.TestCase):
+    """The curated box tiles: the mapping, its arithmetic, and its honesty."""
+
+    def test_the_mapping_is_well_formed(self) -> None:
+        keys = [group.key for group in taxonomy.GROUPS]
+        self.assertEqual(len(keys), len(set(keys)), "group keys must be unique")
+        for group in taxonomy.GROUPS:
+            with self.subTest(group=group.key):
+                self.assertTrue(group.title)
+                self.assertTrue(group.blurb)
+                self.assertTrue(group.emoji)
+                self.assertTrue(group.boxes, "a group with no boxes renders empty")
+                self.assertEqual(len(group.gradient), 2)
+                for colour in group.gradient:
+                    self.assertRegex(colour, r"^#[0-9a-f]{6}$")
+
+    def test_a_box_belongs_to_at_most_one_group(self) -> None:
+        seen: dict[str, str] = {}
+        for group in taxonomy.GROUPS:
+            for box in group.boxes:
+                self.assertNotIn(
+                    box, seen, f"{box!r} is in both {seen.get(box)!r} and {group.key!r}"
+                )
+                seen[box] = group.key
+
+    def test_coverage_sums_the_real_counts(self) -> None:
+        counts = {"software-development": 31, "github": 6, "creative": 17, "zzz": 2}
+        cov = taxonomy.coverage(counts)
+        build = next(row for row in cov.rows if row.group.key == "build")
+        self.assertEqual(build.skills, 37)
+        self.assertEqual(cov.boxes, 4)
+        self.assertEqual(cov.skills, 56)
+        self.assertEqual([name for name, _c in cov.ungrouped], ["zzz"])
+        self.assertEqual(cov.covered_boxes, 3)
+        self.assertEqual(cov.covered_skills, 54)
+
+    def test_every_count_is_accounted_for(self) -> None:
+        counts = dict(self.fake_counts())
+        cov = taxonomy.coverage(counts)
+        grouped = sum(row.skills for row in cov.rows)
+        ungrouped = sum(count for _name, count in cov.ungrouped)
+        self.assertEqual(grouped + ungrouped, cov.skills)
+        self.assertEqual(cov.skills, sum(counts.values()))
+
+    def fake_counts(self) -> dict[str, int]:
+        """A box map with two known boxes and one nobody has heard of."""
+        return {"creative": 4, "software-development": 9, "a-brand-new-box": 3}
+
+    def test_an_unknown_box_is_reported_not_hidden(self) -> None:
+        cov = taxonomy.coverage(self.fake_counts())
+        self.assertIn("a-brand-new-box", [name for name, _c in cov.ungrouped])
+        page = render.render_tiles(cov)
+        self.assertIn("Not in a group yet", page)
+        self.assertIn("a-brand-new-box", page)
+
+    def test_a_renamed_box_shows_as_a_stale_mapping_entry(self) -> None:
+        cov = taxonomy.coverage({"creative": 4})
+        review = next(row for row in cov.rows if row.group.key == "review")
+        self.assertEqual(review.skills, 0)
+        self.assertTrue(review.missing)
+        page = render.render_tiles(cov)
+        self.assertIn("no longer exist", page)
+
+    def test_an_empty_tree_renders_without_crashing(self) -> None:
+        cov = taxonomy.coverage({})
+        self.assertEqual(cov.boxes, 0)
+        self.assertEqual(cov.covered_boxes, 0)
+        self.assertTrue(cov.stale)
+        page = render.render_tiles(cov)
+        # the groups are declared, so they still render; nothing is covered
+        self.assertIn(f"{len(taxonomy.GROUPS)} groups over the 0 boxes", page)
+        self.assertIn("covering 0 of them", page)
+
+    def test_box_names_are_escaped_and_encoded(self) -> None:
+        """A box name is a directory name, so it is untrusted input."""
+        cov = taxonomy.coverage({"<script>alert(1)</script>": 2, "has space": 1})
+        page = render.render_tiles(cov)
+        self.assertNotIn("<script>alert(1)", page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertIn("has%20space", page)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+
+    def test_a_tile_lists_members_and_caps_the_chips(self) -> None:
+        many = {box: 1 for group in taxonomy.GROUPS for box in group.boxes}
+        page = render.render_tiles(taxonomy.coverage(many))
+        build = page[page.index("Build &amp; ship") : page.index("Review &amp; design")]
+        self.assertIn("+7 more boxes", build)
+        self.assertEqual(build.count('class="chip"'), 6)
+
+    def test_the_coverage_line_states_the_arithmetic(self) -> None:
+        page = render.render_tiles(taxonomy.coverage(self.fake_counts()))
+        self.assertIn("8 groups over the 3 boxes", page)
+        self.assertIn("covering 2 of them", page)
+        self.assertIn("the counts are the tree's", page.lower())
+
+    def test_the_index_puts_the_tiles_before_the_domain_cards(self) -> None:
+        registry = server.default_registry(hermes_home=Path(self.tmp.name))
+        tiles = render.render_tiles(taxonomy.coverage(server.box_counts(registry)))
+        page = render.render_index(
+            registry.all(), registry.overviews(), "STAMP", tiles=tiles
+        )
+        self.assertIn('class="tiles"', page)
+        self.assertLess(page.index('class="tiles"'), page.index('class="grid"'))
+
+    def test_box_counts_come_from_the_skills_domain(self) -> None:
+        """One measurement: the tiles and the skills page cannot disagree."""
+        registry = server.default_registry(hermes_home=Path(self.tmp.name))
+        counts = server.box_counts(registry)
+        boxes = next(
+            collection
+            for collection in registry.safe_collections(registry.get("skills"))
+            if collection.key == "boxes"
+        )
+        self.assertEqual(
+            counts,
+            {
+                record.title: int(dict(record.fields)["skills"])
+                for record in boxes.records
+            },
+        )
+        self.assertEqual(
+            sum(counts.values()),
+            sum(int(dict(record.fields)["skills"]) for record in boxes.records),
+        )
+
+    def test_box_counts_tolerates_a_registry_without_skills(self) -> None:
+        registry = registry_module.DomainRegistry()
+        self.assertEqual(server.box_counts(registry), {})
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = make_hermes_root(Path(self.tmp.name))
+        self.tmp_root = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
 
 
 class FavouritesRouteTestCase(unittest.TestCase):

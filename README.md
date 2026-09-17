@@ -29,6 +29,7 @@ hermes/
     model.py         Domain / Collection / Record / Count (counts carry rules)
     sources.py       read-only SQLite, root resolution, formatting, a TTL cache
     state.py         favourites: the portal's own state file and the only writer
+    taxonomy.py      the curated grouping behind the box tiles (presentation only)
     render.py        one generic page shape for every domain
     server.py        routes, JSON endpoints, handler
     __main__.py      python -m hermes.portal
@@ -49,7 +50,7 @@ tests/
   test_portal.py     59 tests, the portal incl. the skills gallery
   test_portal_domains.py 31 tests, usage/health/logs + whole-registry invariants
   test_portal_heavy.py 35 tests, the vault and the code graph
-  test_portal_ui.py  47 tests, favourites (the write path), theme and palette
+  test_portal_ui.py  62 tests, favourites, theme, palette and the box tiles
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -383,6 +384,31 @@ The mockup's UI on top of real data, with one new idea: a record can be **starre
   means launching a Chromium browser with `--app=`. This machine's default browser is
   not Chromium, so that would be a flag that silently does nothing; the theme toggle
   and the rail get the same effect inside a normal tab.
+* **The box tiles are curated, and they say so.** The tree has 55 boxes and 43 of them
+  hold exactly one skill, so `taxonomy.py` arranges the real boxes into eight groups
+  -- name, blurb, emoji and a CSS gradient, no image assets. The tiles are
+  presentation and the counts are measurement: a group's number is the sum of its
+  member boxes' counts, read from the skills domain's own `boxes` collection, so a
+  tile cannot disagree with the skills page. The section prints its coverage
+  ("8 groups over the 55 boxes the tree actually has, covering 55 of them and 158 of
+  158 skills") and lists every box the mapping does *not* name, so a new box appears
+  as ungrouped rather than vanishing into a total, and a renamed box is flagged as a
+  stale mapping entry.
+
+### Running it somewhere else
+
+This portal resolves everything from `$HERMES_HOME`, so a copy on another machine
+works with no configuration -- but two domains are macOS-shaped and degrade rather
+than pretend:
+
+| Domain | macOS-specific part | On another platform |
+| --- | --- | --- |
+| health | `launchctl list`, `~/Library/LaunchAgents/*.plist` | finds nothing, reports 0 services with the sources marked `MISSING`; a `systemd` reader is the equivalent work |
+| logs | also reads `~/Library/Logs/*.log` | reads `$HERMES_HOME/logs` only |
+| vault | defaults to `/Volumes/Data/MyObsidian` | pass `--vault <path>`, or it reports an empty vault |
+
+Everything else -- skills, sessions, cron, usage, the code graph, favourites -- is
+resolved from the Hermes home and needs no platform code.
 
 **Usage** is the single home for cost and token rollups: totals, by day, by model,
 by provider and the most expensive sessions (each linking into the sessions view that
