@@ -34,6 +34,7 @@ from ..sources import (
     state_db,
     truncate,
 )
+from .base import SnapshotDomain
 
 DAY_CAP = 40
 MODEL_CAP = 40
@@ -91,29 +92,32 @@ def _get(row: Any, key: str, default: Any = "\u2014") -> Any:
     return default if value is None else value
 
 
-def build_domain(hermes_home: Path | None = None) -> Domain:
-    """Build the usage domain.
+class UsageDomain(SnapshotDomain[None]):
+    """Tokens and cost, read from the session store.
 
-    Args:
-        hermes_home: Hermes home or profile directory; the root holding
-            ``state.db`` is resolved from it.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`; ``state.db`` is opened read-only
-        per collection, so the numbers are current.
+    A class rather than a factory of closures, so every helper below can be called by
+    name -- by a test, by a reader, and by the code graph.
     """
-    db_path = state_db(hermes_home)
-    source = path_source("state.db", db_path, note="read-only")
 
-    def _open() -> tuple[Any, str]:
-        return open_sqlite(db_path)
+    key = "usage"
+    title = "Usage"
+    summary = "Cost and tokens over time, by model and by provider, from state.db."
 
-    def _sources() -> tuple[Source, ...]:
-        return (source,)
+    def __init__(self, hermes_home: Path | None = None) -> None:
+        """Point at the sources; nothing is read until a page asks."""
+        super().__init__(hermes_home)
+        self.db_path = state_db(self.hermes_home)
+        self.source = path_source("state.db", self.db_path, note="read-only")
 
-    def overview() -> Collection:
+    def _open(self) -> tuple[Any, str]:
+        return open_sqlite(self.db_path)
+
+    def _sources(self) -> tuple[Source, ...]:
+        return (self.source,)
+
+    def overview(self) -> Collection:
         """Headline spend: sessions counted, money and tokens as metrics."""
-        con, error = _open()
+        con, error = self._open()
         usage_columns = select_columns(con, "session_model_usage", USAGE_COLUMNS)
         sessions = scalar(con, "select count(*) from sessions", default=0)
         priced = scalar(
@@ -164,7 +168,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "sessions with a cost estimate (the ones these totals cover)",
             records,
             cap=5,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(sessions, "sessions in total"),
                 Count(sessions - priced, "sessions without a cost estimate"),
@@ -180,9 +184,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _by_day() -> Collection:
+    def _by_day(self) -> Collection:
         """Cost and tokens per calendar day (local time)."""
-        con, error = _open()
+        con, error = self._open()
         columns = select_columns(
             con,
             "sessions",
@@ -196,7 +200,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 "Spend per day.",
                 "days with sessions",
                 [],
-                sources=_sources(),
+                sources=self._sources(),
                 notes=(error or "no started_at column",),
                 as_of=as_of(),
             )
@@ -238,14 +242,14 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for row in rows
             ],
             cap=DAY_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
         )
 
-    def _by_model() -> Collection:
+    def _by_model(self) -> Collection:
         """Per-model rollup, the fullest picture of where tokens go."""
-        con, error = _open()
+        con, error = self._open()
         columns = select_columns(con, "session_model_usage", USAGE_COLUMNS)
         if "model" not in columns:
             _close(con)
@@ -255,7 +259,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 "Tokens and cost per model.",
                 "distinct models in session_model_usage",
                 [],
-                sources=_sources(),
+                sources=self._sources(),
                 notes=(error or "session_model_usage is absent from this database",),
                 as_of=as_of(),
             )
@@ -315,14 +319,14 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for row in rows
             ],
             cap=MODEL_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
         )
 
-    def _by_provider() -> Collection:
+    def _by_provider(self) -> Collection:
         """Per-provider rollup, from the session rows themselves."""
-        con, error = _open()
+        con, error = self._open()
         columns = select_columns(
             con,
             "sessions",
@@ -336,7 +340,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 "Spend per provider.",
                 "distinct billing providers",
                 [],
-                sources=_sources(),
+                sources=self._sources(),
                 notes=(error or "no billing_provider column",),
                 as_of=as_of(),
             )
@@ -378,14 +382,14 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for row in rows
             ],
             cap=MODEL_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
         )
 
-    def _top_sessions() -> Collection:
+    def _top_sessions(self) -> Collection:
         """The most expensive sessions, linking into the sessions domain."""
-        con, error = _open()
+        con, error = self._open()
         columns = select_columns(
             con,
             "sessions",
@@ -408,7 +412,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 "Ranked by estimated cost.",
                 "sessions with a cost estimate",
                 [],
-                sources=_sources(),
+                sources=self._sources(),
                 notes=(error or "no cost column",),
                 as_of=as_of(),
             )
@@ -448,30 +452,37 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 )
                 for row in rows
             ],
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
         )
 
-    def collections(_filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, _filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections for usage and cost.
 
         No query filters: the rollups link out to the sessions index, which is where
         filtering by model or provider belongs.
         """
-        return [_by_day(), _by_model(), _by_provider(), _top_sessions()]
+        return [
+            self._by_day(),
+            self._by_model(),
+            self._by_provider(),
+            self._top_sessions(),
+        ]
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """A day or a model, as a detail page."""
-        for collection in (_by_day(), _by_model(), _by_provider()):
+        for collection in (self._by_day(), self._by_model(), self._by_provider()):
             for record in collection.records:
                 if record.id == record_id:
                     return record
         return None
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind a model or day: the sessions that contributed to it."""
-        con, error = _open()
+        con, error = self._open()
         columns = select_columns(
             con,
             "sessions",
@@ -511,19 +522,19 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                     for row in rows
                 ],
                 cap=TOP_CAP,
-                sources=_sources(),
+                sources=self._sources(),
                 notes=tuple(note for note in (error, sql_error) if note),
                 as_of=as_of(),
             )
         ]
 
-    def search(needle: str, limit: int) -> Sequence[Record]:
+    def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Find a model or provider by name."""
         term = needle.strip().lower()
         if not term:
             return []
         hits: list[Record] = []
-        for collection in (_by_model(), _by_provider(), _by_day()):
+        for collection in (self._by_model(), self._by_provider(), self._by_day()):
             for record in collection.records:
                 if term in record.title.lower():
                     hits.append(
@@ -539,13 +550,14 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                     return hits
         return hits
 
-    return Domain(
-        key="usage",
-        title="Usage",
-        summary="Cost and tokens over time, by model and by provider, from state.db.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(hermes_home: Path | None = None) -> Domain:
+    """Build the 'usage' domain.
+
+    Args:
+        hermes_home: Hermes home or profile directory.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.
+    """
+    return UsageDomain(hermes_home).domain()

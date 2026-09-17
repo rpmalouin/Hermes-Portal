@@ -38,6 +38,7 @@ from ..sources import (
     table_columns,
     truncate,
 )
+from .base import SnapshotDomain
 
 SESSION_COLUMNS = (
     "id",
@@ -224,28 +225,33 @@ def _profile_store_notes() -> list[str]:
     ]
 
 
-def build_domain(hermes_home: Path | None = None) -> Domain:
-    """Build the sessions domain.
+class SessionsDomain(SnapshotDomain[None]):
+    """Sessions and their messages, read from the session store.
 
-    Args:
-        hermes_home: Hermes home or profile directory; the root holding
-            ``state.db`` is resolved from it.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`; ``state.db`` is opened read-only
-        per call, so pages reflect the live database.
+    A class rather than a factory of closures, so every helper below can be called by
+    name -- by a test, by a reader, and by the code graph.
     """
-    db_path = state_db(hermes_home)
-    source = path_source("state.db", db_path, note="opened read-only, per request")
 
-    def _open() -> tuple[Any, str]:
+    key = "sessions"
+    title = "Sessions"
+    summary = "Conversations, messages and cost from state.db, read read-only."
+
+    def __init__(self, hermes_home: Path | None = None) -> None:
+        """Point at the sources; nothing is read until a page asks."""
+        super().__init__(hermes_home)
+        self.db_path = state_db(self.hermes_home)
+        self.source = path_source(
+            "state.db", self.db_path, note="opened read-only, per request"
+        )
+
+    def _open(self) -> tuple[Any, str]:
         """Open the state database read-only, returning ``(connection, error)``."""
-        return open_sqlite(db_path)
+        return open_sqlite(self.db_path)
 
-    def _sources() -> tuple[Source, ...]:
-        return (source,)
+    def _sources(self) -> tuple[Source, ...]:
+        return (self.source,)
 
-    def _notes(con: Any, error: str) -> tuple[str, ...]:
+    def _notes(self, con: Any, error: str) -> tuple[str, ...]:
         """Caveats for this read; must be called *before* the connection closes."""
         notes = []
         if error:
@@ -257,16 +263,16 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         ]
         if missing:
             notes.append("tables absent from this database: " + ", ".join(missing))
-        if db_path.with_name(db_path.name + "-wal").exists():
+        if self.db_path.with_name(self.db_path.name + "-wal").exists():
             notes.append(
                 "a WAL file is present: the agent is live, reads may lag by a moment"
             )
         notes.extend(_profile_store_notes())
         return tuple(notes)
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """Headline numbers for the sessions domain."""
-        con, error = _open()
+        con, error = self._open()
         messages = scalar(con, "select count(*) from messages", default=0)
         tool_messages = scalar(
             con, "select count(*) from messages where tool_name is not null", default=0
@@ -290,7 +296,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             con,
             f"select {', '.join(columns) or 'id'} from sessions order by {order} desc",
         )
-        notes = list(_notes(con, error))  # queries, so it must run before the close
+        notes = list(
+            self._notes(con, error)
+        )  # queries, so it must run before the close
         if sql_error:
             notes.append(sql_error)
         notes.append(
@@ -312,7 +320,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "rows in the sessions table of state.db",
             [_session_record(row) for row in rows],
             cap=5,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(messages, "rows in the messages table"),
                 Count(indexed, f"rows in the {fts.WORD_INDEX} search index"),
@@ -324,10 +332,10 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         )
 
     def _sessions_collection(
-        model: str | None = None, provider: str | None = None
+        self, model: str | None = None, provider: str | None = None
     ) -> Collection:
         """The session index, newest first, optionally filtered."""
-        con, error = _open()
+        con, error = self._open()
         columns = select_columns(con, "sessions", SESSION_COLUMNS)
         order = "started_at" if "started_at" in columns else columns[0]
         where: list[str] = []
@@ -351,7 +359,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         everything = scalar(con, "select count(*) from sessions", default=0)
         archived = sum(1 for row in rows if _get(row, "archived", 0))
         hidden = sum(1 for row in rows if _get(row, "hidden", 0))
-        notes = list(_notes(con, error))
+        notes = list(self._notes(con, error))
         if sql_error:
             notes.append(sql_error)
         _close(con)
@@ -384,20 +392,20 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             definition,
             [_session_record(row) for row in rows],
             cap=SESSION_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=tuple(extra),
             notes=tuple(notes),
             as_of=as_of(),
         )
 
-    def _messages_collection() -> Collection:
+    def _messages_collection(self) -> Collection:
         """The newest messages: the corpus, browsable and not only searchable.
 
         These excerpts are the *start* of each message, not a search excerpt -- nothing
         is highlighted here, and the title says so by comparing with a search result,
         which is an excerpt around the match.
         """
-        con, error = _open()
+        con, error = self._open()
         total = fts.count_messages(con)
         rows, note = fts.recent_messages(con, MESSAGES_CAP)
         by_role, _role_error = query(
@@ -452,7 +460,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             f"messages from the messages table, newest {MESSAGES_CAP} shown",
             records,
             cap=MESSAGES_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(total, "rows in the messages table"),
                 Count(tool_messages, "messages produced by a tool"),
@@ -462,7 +470,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def collections(filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections for the sessions domain.
 
         ``?model=<name>`` and ``?provider=<name>`` narrow the session index; the
@@ -474,16 +484,16 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         """
         active = filters or {}
         return [
-            _sessions_collection(
+            self._sessions_collection(
                 model=(active.get("model") or "").strip() or None,
                 provider=(active.get("provider") or "").strip() or None,
             ),
-            _messages_collection(),
+            self._messages_collection(),
         ]
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One session, as a detail page."""
-        con, error = _open()
+        con, error = self._open()
         columns = select_columns(con, "sessions", SESSION_COLUMNS)
         rows, sql_error = query(
             con, f"select {', '.join(columns)} from sessions where id = ?", (record_id,)
@@ -503,9 +513,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             body="\n".join(n for n in notes if n),
         )
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind one session: its messages and its per-model usage."""
-        con, error = _open()
+        con, error = self._open()
         message_columns = select_columns(con, "messages", MESSAGE_COLUMNS)
         order = "timestamp" if "timestamp" in message_columns else "id"
         rows, sql_error = query(
@@ -557,7 +567,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for row in rows
             ],
             cap=MESSAGES_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(n for n in (error, sql_error) if n)
             + ("bodies are capped for the page; the full text lives in Hermes",),
             as_of=as_of(),
@@ -592,13 +602,13 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for row in usage_rows
             ],
             cap=USAGE_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(n for n in (error, usage_error) if n),
             as_of=as_of(),
         )
         return [messages, usage]
 
-    def search(needle: str, limit: int) -> Sequence[Record]:
+    def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Search message text through the FTS index, then session titles.
 
         Messages come first because they are the content: a hit is an excerpt *around*
@@ -609,7 +619,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         term = needle.strip()
         if not term:
             return []
-        con, _error = _open()
+        con, _error = self._open()
         records: list[Record] = []
 
         hits, index_used, _note = fts.search_messages(con, term, limit)
@@ -657,13 +667,14 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         _close(con)
         return records[:limit]
 
-    return Domain(
-        key="sessions",
-        title="Sessions",
-        summary="Conversations, messages and cost from state.db, read read-only.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(hermes_home: Path | None = None) -> Domain:
+    """Build the 'sessions' domain.
+
+    Args:
+        hermes_home: Hermes home or profile directory.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.
+    """
+    return SessionsDomain(hermes_home).domain()

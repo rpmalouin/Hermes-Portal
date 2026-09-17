@@ -1131,6 +1131,9 @@ class TestServer(unittest.TestCase):
     def test_filters_are_read_from_the_query_string(self) -> None:
         self.assertEqual(server.filters_from(""), {})
         self.assertEqual(server.filters_from("box=creative"), {"box": "creative"})
+        # every filter a domain reads must survive the whitelist, or a page
+        # cannot ask for it at all
+        self.assertEqual(server.filters_from("folder=Homelab"), {"folder": "Homelab"})
         self.assertEqual(server.filters_from("box=&q=ignored"), {})
         self.assertEqual(
             server.filters_from("model=x&provider=y&nope=z"),

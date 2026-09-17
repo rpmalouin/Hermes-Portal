@@ -51,6 +51,7 @@ from ..sources import (
     snippet,
     tail_text,
 )
+from .base import SnapshotDomain
 
 STALE_MINUTES = 10
 LISTENER_TIMEOUT = 0.4
@@ -146,21 +147,25 @@ def _plists() -> list[dict[str, Any]]:
     return loaded
 
 
-def build_domain(hermes_home: Path | None = None) -> Domain:
-    """Build the health domain.
+class HealthDomain(SnapshotDomain[None]):
+    """Host facts: launchd services, heartbeat files, listening ports and disk.
 
-    Args:
-        hermes_home: Hermes home or profile directory.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`.  Every probe runs per collection,
-        so the page reflects the machine at the moment it is opened.
+    A class rather than a factory of closures, so every helper below can be called by
+    name -- by a test, by a reader, and by the code graph.
     """
-    root = hermes_root(hermes_home)
-    state_db = root / "state.db"
-    cron_root = cron_dir(hermes_home)
 
-    def _services_collection() -> Collection:
+    key = "health"
+    title = "Health"
+    summary = "Services, gateway heartbeats, listening ports, tickers and storage."
+
+    def __init__(self, hermes_home: Path | None = None) -> None:
+        """Point at the sources; nothing is read until a page asks."""
+        super().__init__(hermes_home)
+        self.root = hermes_root(self.hermes_home)
+        self.state_db = self.root / "state.db"
+        self.cron_root = cron_dir(self.hermes_home)
+
+    def _services_collection(self) -> Collection:
         """Hermes' launchd services: declared, loaded, and listening (or not)."""
         state, error = _launchctl_state()
         plists = [
@@ -258,9 +263,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _heartbeats_collection() -> Collection:
+    def _heartbeats_collection(self) -> Collection:
         """The gateway's own heartbeat rows, newest first."""
-        con, error = open_sqlite(state_db)
+        con, error = open_sqlite(self.state_db)
         total = scalar(con, "select count(*) from gateway_heartbeats", default=0)
         rows, sql_error = query(
             con,
@@ -302,7 +307,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for row in rows
             ],
             cap=20,
-            sources=(path_source("state.db", state_db, note="read-only"),),
+            sources=(path_source("state.db", self.state_db, note="read-only"),),
             extra_counts=(
                 Count(total, "heartbeat rows in total"),
                 Count(
@@ -323,7 +328,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _ports_collection() -> Collection:
+    def _ports_collection(self) -> Collection:
         """TCP listeners, via lsof."""
         output, error = run_argv(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], timeout=20.0)
         rows = [line for line in output.splitlines() if line.strip()][1:]
@@ -363,24 +368,28 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _storage_collection() -> Collection:
+    def _storage_collection(self) -> Collection:
         """The stores Hermes grows: state, snapshots, backups, graph, cron."""
         targets: list[tuple[str, Path, str]] = [
-            ("state.db", state_db, "sessions, messages, usage, heartbeats"),
+            ("state.db", self.state_db, "sessions, messages, usage, heartbeats"),
             (
                 "state.db-wal",
-                state_db.with_name(state_db.name + "-wal"),
+                self.state_db.with_name(self.state_db.name + "-wal"),
                 "write-ahead log",
             ),
-            ("cron/executions.db", cron_root / "executions.db", "cron run history"),
-            ("snapshots", root / "state-snapshots", "pre-update state snapshots"),
-            ("backups", root / "backups", "config and vault backups"),
+            (
+                "cron/executions.db",
+                self.cron_root / "executions.db",
+                "cron run history",
+            ),
+            ("snapshots", self.root / "state-snapshots", "pre-update state snapshots"),
+            ("backups", self.root / "backups", "config and vault backups"),
             (
                 "code graph",
-                root / ".code-review-graph" / "graph.db",
+                self.root / ".code-review-graph" / "graph.db",
                 "code-review-graph",
             ),
-            ("logs", root / "logs", "agent and gateway logs"),
+            ("logs", self.root / "logs", "agent and gateway logs"),
         ]
         records = []
         for label, path, note in targets:
@@ -406,7 +415,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                     ),
                 )
             )
-        for profile in sorted((root / "profiles").glob("*/state.db")):
+        for profile in sorted((self.root / "profiles").glob("*/state.db")):
             records.append(
                 Record(
                     id=f"profile {profile.parent.name}",
@@ -432,9 +441,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "storage",
             "Storage",
             "What Hermes keeps on disk, so growth is visible before it is a problem.",
-            "stores present under the Hermes root",
+            "stores present under the Hermes self.root",
             records,
-            sources=(path_source("Hermes root", root),),
+            sources=(path_source("Hermes self.root", self.root),),
             metrics=(("Databases measured here", human_size(total)),),
             notes=(
                 "directory sizes are summed recursively and can take a moment on the "
@@ -443,12 +452,12 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _tickers_collection() -> Collection:
+    def _tickers_collection(self) -> Collection:
         """The cron scheduler's liveness stamps."""
         records = []
         for label, path in (
-            ("ticker heartbeat", cron_root / "ticker_heartbeat"),
-            ("last successful tick", cron_root / "ticker_last_success"),
+            ("ticker heartbeat", self.cron_root / "ticker_heartbeat"),
+            ("last successful tick", self.cron_root / "ticker_last_success"),
         ):
             age = None
             if path.is_file():
@@ -483,15 +492,15 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "cron is stuck.",
             "ticker stamp files under cron/",
             records,
-            sources=(path_source("cron store", cron_root),),
+            sources=(path_source("cron store", self.cron_root),),
             as_of=as_of(),
         )
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """Headline health: what is running, what is stale."""
-        services = _services_collection()
-        heartbeats = _heartbeats_collection()
-        tickers = _tickers_collection()
+        services = self._services_collection()
+        heartbeats = self._heartbeats_collection()
+        tickers = self._tickers_collection()
         running = count_map(services.extra_counts).get("running", 0)
         stale = count_map(heartbeats.extra_counts).get(
             f"stale (over {STALE_MINUTES} min)", 0
@@ -536,25 +545,27 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def collections(_filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, _filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections for health."""
         return [
-            _services_collection(),
-            _heartbeats_collection(),
-            _ports_collection(),
-            _tickers_collection(),
-            _storage_collection(),
+            self._services_collection(),
+            self._heartbeats_collection(),
+            self._ports_collection(),
+            self._tickers_collection(),
+            self._storage_collection(),
         ]
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """A service, a backend or a store."""
-        for collection in collections():
+        for collection in self.collections():
             for record in collection.records:
                 if record.id == record_id and record.fields:
                     return record
         return None
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind a service: the tail of the log its plist points at."""
         plists = [plist for plist in _plists() if str(plist.get("Label")) == record_id]
         if not plists:
@@ -596,16 +607,16 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             )
         return sections
 
-    def search(needle: str, limit: int) -> Sequence[Record]:
+    def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Find a service, backend or listener by name."""
         term = needle.strip().lower()
         if not term:
             return []
         hits: list[Record] = []
         for collection in (
-            _services_collection(),
-            _heartbeats_collection(),
-            _ports_collection(),
+            self._services_collection(),
+            self._heartbeats_collection(),
+            self._ports_collection(),
         ):
             for record in collection.records:
                 haystack = f"{record.title} {record.subtitle}".lower()
@@ -622,13 +633,14 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                     return hits
         return hits
 
-    return Domain(
-        key="health",
-        title="Health",
-        summary="Services, gateway heartbeats, listening ports, tickers and storage.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(hermes_home: Path | None = None) -> Domain:
+    """Build the 'health' domain.
+
+    Args:
+        hermes_home: Hermes home or profile directory.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.
+    """
+    return HealthDomain(hermes_home).domain()

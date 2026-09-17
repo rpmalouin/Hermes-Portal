@@ -34,6 +34,7 @@ from hermes.portal import sources  # noqa: E402
 from hermes.portal.domains import default_registry  # noqa: E402
 from hermes.portal.domains import health as health_domain  # noqa: E402
 from hermes.portal.domains import logs as logs_domain  # noqa: E402
+from hermes.portal.domains import sessions as sessions_domain  # noqa: E402
 from hermes.portal.domains import usage as usage_domain  # noqa: E402
 from hermes.portal.model import Domain, count_map  # noqa: E402
 
@@ -665,6 +666,102 @@ class TestScrubber(unittest.TestCase):
         self.assertEqual(error, "")
         _output, error = sources.run_argv(["/nonexistent/binary"])
         self.assertIn("failed", error)
+
+
+class ConvertedDomainsPrimitivesTestCase(BaseP1):
+    """The primitives of the three domains whose factories became classes.
+
+    ``usage``, ``health`` and ``sessions`` were closures inside 458-, 486- and 443-line
+    factories, so no test could name one.  They are methods now, and this calls them --
+    ``_open``/``_sources``/``_notes`` and every collection builder.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        make_launch_agents(self.root)
+        self.usage = usage_domain.UsageDomain(hermes_home=self.root)
+        self.health = health_domain.HealthDomain(hermes_home=self.root)
+        self.sessions = sessions_domain.SessionsDomain(hermes_home=self.root)
+
+    def test_usage_open_is_read_only_and_sources_names_the_store(self) -> None:
+        con, error = self.usage._open()
+        self.assertFalse(error)
+        assert con is not None
+        with self.assertRaises(sqlite3.OperationalError):
+            con.execute("delete from sessions")
+        con.close()
+        sources = self.usage._sources()
+        self.assertEqual(len(sources), 1)
+        self.assertIn("state.db", sources[0].label)
+
+    def test_usage_preamble_locals_are_attributes_now(self) -> None:
+        self.assertEqual(self.usage.db_path, self.root / "state.db")
+        self.assertEqual(self.usage.source.label, "state.db")
+
+    def test_health_preamble_locals_are_attributes_now(self) -> None:
+        self.assertEqual(self.health.root, self.root)
+        self.assertEqual(self.health.state_db, self.root / "state.db")
+        self.assertTrue(str(self.health.cron_root).endswith("cron"))
+
+    def test_every_health_builder_counts_what_it_carries(self) -> None:
+        for collection in (
+            self.health._services_collection(),
+            self.health._heartbeats_collection(),
+            self.health._ports_collection(),
+            self.health._storage_collection(),
+            self.health._tickers_collection(),
+        ):
+            with self.subTest(collection=collection.key):
+                if not collection.truncated:
+                    self.assertEqual(collection.count.value, len(collection.records))
+        # the fixture writes a LaunchAgent, so the services collection is not empty
+        self.assertTrue(self.health._services_collection().records)
+
+    def test_every_usage_builder_counts_what_it_carries(self) -> None:
+        for collection in (
+            self.usage._by_day(),
+            self.usage._by_model(),
+            self.usage._by_provider(),
+            self.usage._top_sessions(),
+        ):
+            with self.subTest(collection=collection.key):
+                self.assertTrue(collection.records)
+                if not collection.truncated:
+                    self.assertEqual(collection.count.value, len(collection.records))
+
+    def test_sessions_open_and_sources_name_the_store(self) -> None:
+        con, error = self.sessions._open()
+        self.assertFalse(error)
+        assert con is not None
+        con.close()
+        self.assertEqual(self.sessions.db_path, self.root / "state.db")
+        self.assertEqual(len(self.sessions._sources()), 1)
+
+    def test_sessions_notes_explain_a_missing_store(self) -> None:
+        """A page with no store must say why rather than render an empty table."""
+        notes = self.sessions._notes(None, "unable to open database file")
+        self.assertTrue(notes)
+        self.assertTrue(any("unable to open" in note for note in notes))
+
+    def test_the_sessions_filter_narrows_and_the_builders_count_it(self) -> None:
+        everything = self.sessions._sessions_collection()
+        narrowed = self.sessions._sessions_collection(model="nothing-like-this")
+        self.assertTrue(everything.records)
+        self.assertEqual(narrowed.records, ())
+        self.assertEqual(narrowed.count.value, 0)
+        messages = self.sessions._messages_collection()
+        self.assertEqual(messages.count.value, len(messages.records))
+
+    def test_each_converted_domain_still_builds_a_wired_domain(self) -> None:
+        for module, kwargs in (
+            (usage_domain, {"hermes_home": self.root}),
+            (health_domain, {"hermes_home": self.root}),
+            (sessions_domain, {"hermes_home": self.root}),
+        ):
+            with self.subTest(domain=module.__name__):
+                domain = module.build_domain(**kwargs)
+                self.assertTrue(domain.key)
+                self.assertEqual(domain.overview().key, "overview")
 
 
 if __name__ == "__main__":

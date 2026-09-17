@@ -716,5 +716,78 @@ class GraphPrimitivesTestCase(unittest.TestCase):
         self.assertEqual(domain.overview().key, "overview")
 
 
+class VaultPrimitivesTestCase(unittest.TestCase):
+    """The vault domain's primitives, called by name.
+
+    This is the domain whose factory hand-rolled a cache *and* a lock: ``state`` and
+    ``threading.Lock()`` around a closure called ``index()``.  Both are the base class's
+    This is the domain whose factory hand-rolled a cache *and* a lock: ``state`` and a
+    ``threading.Lock()`` around a closure called ``index()``.  Both are the base class's
+    regression that matters, and the rest name the builders.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = make_vault(Path(cls._tmp.name) / "vault")
+        cls.domain = vault_domain.VaultDomain(vault=cls.root)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def test_the_index_is_built_once_and_forget_rebuilds_it(self) -> None:
+        first = self.domain.snapshot()
+        self.assertIs(self.domain.snapshot(), first)
+        self.domain.forget()
+        self.assertIsNot(self.domain.snapshot(), first)
+
+    def test_read_returns_the_index_over_the_notes(self) -> None:
+        current = self.domain.read()
+        self.assertTrue(current.notes)
+        self.assertEqual(len(current.notes), len(self.domain.snapshot().notes))
+
+    def test_sources_and_notes_read_the_snapshot_they_are_given(self) -> None:
+        current = self.domain.snapshot()
+        sources = self.domain._sources(current)
+        self.assertEqual(len(sources), 1)
+        self.assertIn("vault", sources[0].label)
+        notes = self.domain._notes(current)
+        self.assertEqual(len(notes), len(current.notes))
+
+    def test_open_tasks_are_four_tuples(self) -> None:
+        tasks = self.domain._open_tasks(self.domain.snapshot())
+        self.assertTrue(tasks)
+        for task in tasks:
+            self.assertEqual(len(task), 4)
+
+    def test_every_collection_builder_counts_what_it_carries(self) -> None:
+        current = self.domain.snapshot()
+        for collection in (
+            self.domain._kanban_collection(current),
+            self.domain._tasks_collection(current),
+            self.domain._folders_collection(current),
+            self.domain._hubs_collection(current),
+            self.domain._tags_collection(current),
+        ):
+            with self.subTest(collection=collection.key):
+                if not collection.truncated:
+                    self.assertEqual(collection.count.value, len(collection.records))
+        self.assertTrue(self.domain._tags_collection(current).records)
+
+    def test_the_notes_collection_takes_a_folder(self) -> None:
+        current = self.domain.snapshot()
+        every = self.domain._notes_collection(current)
+        none = self.domain._notes_collection(current, folder="no/such/folder")
+        self.assertTrue(every.records)
+        self.assertEqual(none.records, ())
+        self.assertEqual(none.count.value, 0)
+
+    def test_build_domain_still_returns_a_wired_domain(self) -> None:
+        domain = vault_domain.build_domain(vault=self.root)
+        self.assertEqual(domain.key, "vault")
+        self.assertEqual(domain.overview().key, "overview")
+
+
 if __name__ == "__main__":
     unittest.main()

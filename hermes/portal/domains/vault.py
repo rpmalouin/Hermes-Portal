@@ -18,7 +18,6 @@ left alone rather than guessed at.
 from __future__ import annotations
 
 import re
-import threading
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -34,6 +33,7 @@ from ..sources import (
     snippet,
     truncate,
 )
+from .base import SnapshotDomain
 
 DEFAULT_VAULT = Path("/Volumes/Data/MyObsidian")
 SKIPPED_DIRS = frozenset({".obsidian", ".trash", ".git", ".smart-env", "node_modules"})
@@ -276,38 +276,46 @@ class KanbanCard:
         return self.status in {"done", "complete", "completed", "closed"}
 
 
-def build_domain(vault: Path | None = None) -> Domain:
-    """Build the vault domain.
+class VaultDomain(SnapshotDomain[VaultIndex]):
+    """The Obsidian vault: notes, links, tags, tasks and Kanban cards.
 
-    Args:
-        vault: Vault root; ``None`` uses :data:`DEFAULT_VAULT`.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`.  The index is built on first use
-        (one pass over the notes) and reused afterwards.
+    A class rather than a factory of closures, so every helper below can be called by
+    name -- by a test, by a reader, and by the code graph.
     """
-    state: dict[str, VaultIndex] = {}
-    lock = threading.Lock()
 
-    def index() -> VaultIndex:
-        with lock:
-            if "index" not in state:
-                state["index"] = build_index(vault)
-            return state["index"]
+    key = "vault"
+    title = "Vault"
+    summary = "Obsidian notes with their links, backlinks, tags and open tasks."
 
-    def _sources(current: VaultIndex) -> tuple[Source, ...]:
+    def __init__(
+        self, hermes_home: Path | None = None, vault: Path | None = None
+    ) -> None:
+        """Point at the vault; the index is built on first use.
+
+        Args:
+            hermes_home: Hermes home or profile directory.
+            vault: Vault root; ``None`` uses :data:`DEFAULT_VAULT`.
+        """
+        super().__init__(hermes_home)
+        self.vault = vault
+
+    def read(self) -> VaultIndex:
+        """Build the index over the notes; the base class owns the cache."""
+        return build_index(self.vault)
+
+    def _sources(self, current: VaultIndex) -> tuple[Source, ...]:
         return (path_source("vault", current.root, note=f"{len(current.notes)} notes"),)
 
-    def _notes(current: VaultIndex) -> list[Note]:
+    def _notes(self, current: VaultIndex) -> list[Note]:
         return sorted(current.notes.values(), key=lambda note: note.rel)
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """Headline: how much is in the vault and how tangled it is."""
-        current = index()
-        open_tasks = len(_open_tasks(current))
+        current = self.snapshot()
+        open_tasks = len(self._open_tasks(current))
         done = sum(note.done_tasks for note in current.notes.values())
         links = sum(len(note.links) for note in current.notes.values())
-        notes = _notes(current)
+        notes = self._notes(current)
         return build_collection(
             "overview",
             "Vault",
@@ -329,7 +337,7 @@ def build_domain(vault: Path | None = None) -> Domain:
                 for note in sorted(notes, key=lambda n: -n.mtime)
             ],
             cap=RECENT_CAP,
-            sources=_sources(current),
+            sources=self._sources(current),
             extra_counts=(
                 Count(len(current.notes), "notes indexed"),
                 Count(links, "wiki links in those notes"),
@@ -349,7 +357,7 @@ def build_domain(vault: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
-    def _kanban_collection(current: VaultIndex) -> Collection:
+    def _kanban_collection(self, current: VaultIndex) -> Collection:
         """The board note, one record per card, with the card's own fields."""
         cards = kanban_cards(current)
         columns = Counter(card.column for card in cards)
@@ -385,7 +393,7 @@ def build_domain(vault: Path | None = None) -> Domain:
                 )
                 for index, card in enumerate(cards)
             ],
-            sources=_sources(current),
+            sources=self._sources(current),
             extra_counts=(
                 Count(len(open_cards), "cards not marked done"),
                 Count(len(cards) - len(open_cards), "cards marked done"),
@@ -408,7 +416,7 @@ def build_domain(vault: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
-    def _open_tasks(current: VaultIndex) -> list[tuple[str, str, str, str]]:
+    def _open_tasks(self, current: VaultIndex) -> list[tuple[str, str, str, str]]:
         """Open work as ``(text, note_rel, badge, detail)`` tuples.
 
         Two conventions, because the vault has two: a checkbox line in an ordinary
@@ -417,7 +425,7 @@ def build_domain(vault: Path | None = None) -> Domain:
         """
         board = {card.note for card in kanban_cards(current)}
         found: list[tuple[str, str, str, str]] = []
-        for note in _notes(current):
+        for note in self._notes(current):
             if note.rel in board:
                 continue
             for text in note.open_tasks:
@@ -429,9 +437,9 @@ def build_domain(vault: Path | None = None) -> Domain:
                 )
         return found
 
-    def _tasks_collection(current: VaultIndex) -> Collection:
+    def _tasks_collection(self, current: VaultIndex) -> Collection:
         """Open work across the whole vault, wherever it lives."""
-        open_items = _open_tasks(current)
+        open_items = self._open_tasks(current)
         done_boxes = sum(note.done_tasks for note in current.notes.values())
         done_cards = sum(1 for card in kanban_cards(current) if card.is_done)
         return build_collection(
@@ -451,7 +459,7 @@ def build_domain(vault: Path | None = None) -> Domain:
                 for index, (text, note_rel, badge, detail) in enumerate(open_items)
             ],
             cap=TASKS_CAP,
-            sources=_sources(current),
+            sources=self._sources(current),
             extra_counts=(
                 Count(done_boxes, "checked boxes in ordinary notes"),
                 Count(done_cards, "Kanban cards marked done"),
@@ -463,7 +471,7 @@ def build_domain(vault: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
-    def _folders_collection(current: VaultIndex) -> Collection:
+    def _folders_collection(self, current: VaultIndex) -> Collection:
         """Top-level folders by note count."""
         folders = current.folders()
         return build_collection(
@@ -481,11 +489,11 @@ def build_domain(vault: Path | None = None) -> Domain:
                 )
                 for name, count in folders
             ],
-            sources=_sources(current),
+            sources=self._sources(current),
             as_of=current.as_of,
         )
 
-    def _hubs_collection(current: VaultIndex) -> Collection:
+    def _hubs_collection(self, current: VaultIndex) -> Collection:
         """Notes with the most outbound links, and how many point back."""
         ordered = sorted(
             current.notes.values(), key=lambda note: (-len(note.links), note.rel)
@@ -507,11 +515,11 @@ def build_domain(vault: Path | None = None) -> Domain:
                 if note.links
             ],
             cap=HUBS_CAP,
-            sources=_sources(current),
+            sources=self._sources(current),
             as_of=current.as_of,
         )
 
-    def _tags_collection(current: VaultIndex) -> Collection:
+    def _tags_collection(self, current: VaultIndex) -> Collection:
         """Frontmatter tags with their counts."""
         counter: Counter[str] = Counter()
         for note in current.notes.values():
@@ -528,33 +536,37 @@ def build_domain(vault: Path | None = None) -> Domain:
                 for tag, count in counter.most_common()
             ],
             cap=TAGS_CAP,
-            sources=_sources(current),
+            sources=self._sources(current),
             notes=("only frontmatter tags are counted; inline #tags are not parsed",),
             as_of=current.as_of,
         )
 
-    def collections(filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections for the vault.
 
         ``?folder=<name>`` narrows the note list to one top-level folder; the folder
         records link straight into it.
         """
-        current = index()
+        current = self.snapshot()
         folder = ((filters or {}).get("folder") or "").strip() or None
         return [
-            _kanban_collection(current),
-            _tasks_collection(current),
-            _folders_collection(current),
-            _hubs_collection(current),
-            _tags_collection(current),
-            _notes_collection(current, folder),
+            self._kanban_collection(current),
+            self._tasks_collection(current),
+            self._folders_collection(current),
+            self._hubs_collection(current),
+            self._tags_collection(current),
+            self._notes_collection(current, folder),
         ]
 
-    def _notes_collection(current: VaultIndex, folder: str | None = None) -> Collection:
+    def _notes_collection(
+        self, current: VaultIndex, folder: str | None = None
+    ) -> Collection:
         """Every note, optionally filtered to one top-level folder."""
         notes = [
             note
-            for note in _notes(current)
+            for note in self._notes(current)
             if folder is None or note.folder.split("/")[0] == folder
         ]
         return build_collection(
@@ -579,13 +591,13 @@ def build_domain(vault: Path | None = None) -> Domain:
                 for note in notes
             ],
             cap=NOTE_CAP,
-            sources=_sources(current),
+            sources=self._sources(current),
             as_of=current.as_of,
         )
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One note: its frontmatter, its size, and the note text itself."""
-        current = index()
+        current = self.snapshot()
         note = current.notes.get(record_id)
         if note is None:
             return None
@@ -619,9 +631,9 @@ def build_domain(vault: Path | None = None) -> Domain:
             body=truncate(note.body, BODY_CAP),
         )
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind one note: what it links to, and what links back to it."""
-        current = index()
+        current = self.snapshot()
         note = current.notes.get(record_id)
         if note is None:
             return []
@@ -658,7 +670,7 @@ def build_domain(vault: Path | None = None) -> Domain:
                 "Wiki links in this note, resolved against the vault.",
                 "wiki links in this note",
                 out_records,
-                sources=_sources(current),
+                sources=self._sources(current),
                 as_of=current.as_of,
             ),
             build_collection(
@@ -667,19 +679,19 @@ def build_domain(vault: Path | None = None) -> Domain:
                 "Notes that link to this one.",
                 "notes linking here",
                 back_records,
-                sources=_sources(current),
+                sources=self._sources(current),
                 as_of=current.as_of,
             ),
         ]
 
-    def search(needle: str, limit: int) -> Sequence[Record]:
+    def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Substring search over titles, tags and note text."""
         term = needle.strip()
         if not term:
             return []
         lowered = term.lower()
         hits: list[Record] = []
-        for note in _notes(index()):
+        for note in self._notes(self.snapshot()):
             where = ""
             excerpt = ""
             if lowered in note.title.lower():
@@ -704,13 +716,15 @@ def build_domain(vault: Path | None = None) -> Domain:
                 break
         return hits
 
-    return Domain(
-        key="vault",
-        title="Vault",
-        summary="Obsidian notes with their links, backlinks, tags and open tasks.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(vault: Path | None = None) -> Domain:
+    """Build the vault domain.
+
+    Args:
+        vault: Vault root; ``None`` uses :data:`DEFAULT_VAULT`.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.  The index is built on first use (one
+        pass over the notes) and reused afterwards.
+    """
+    return VaultDomain(vault=vault).domain()
