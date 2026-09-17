@@ -20,7 +20,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -1033,6 +1033,196 @@ class TestDeckBoxFilter(unittest.TestCase):
         printed = out.getvalue()
         self.assertIn("0 skills", printed)
         self.assertIn("filter: --box absent (3 hidden)", printed)
+
+
+@contextmanager
+def run_deck_server(data: deck.DeckData, default_boxes: tuple[str, ...] = ()):
+    """Yield the base URL of a deck server on an ephemeral port.
+
+    Restores the handler's class-level state on exit, so tests cannot leak a
+    deck or a default filter into each other.
+    """
+    saved = (deck.DeckHandler.data, deck.DeckHandler.default_boxes)
+    deck.DeckHandler.data = data
+    deck.DeckHandler.default_boxes = default_boxes
+    server = ThreadingHTTPServer(("127.0.0.1", 0), deck.DeckHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        deck.DeckHandler.data, deck.DeckHandler.default_boxes = saved
+
+
+def fetch(url: str) -> str:
+    """GET *url* and return the decoded body."""
+    with urllib.request.urlopen(url, timeout=10) as response:
+        return response.read().decode("utf-8")
+
+
+class TestDeckBoxPicker(unittest.TestCase):
+    """The box dropdown and the ?box= query that backs it."""
+
+    def cards(self) -> list[deck.Card]:
+        return [
+            deck.Card(
+                "ascii-art",
+                "A",
+                "d",
+                "creative",
+                "creative/ascii-art",
+                "hermes",
+                "s",
+                "/a",
+            ),
+            deck.Card(
+                "p5js", "P", "d", "creative", "creative/p5js", "hermes", "s", "/b"
+            ),
+            deck.Card("beta", "B", "d", "beta", "beta", "hermes", "s", "/c"),
+        ]
+
+    def options(self, page: str) -> list[tuple[str, str, str]]:
+        import re
+
+        return re.findall(r'<option value="([^"]*)"( selected)?>([^<]+)</option>', page)
+
+    def test_picker_is_a_get_form_that_submits_on_change(self) -> None:
+        page = deck.render_page(deck.DeckData(cards=self.cards()))
+        self.assertIn('<form class="picker" method="get" action="/"', page)
+        self.assertIn(
+            '<select id="box" name="box" onchange="this.form.submit()">', page
+        )
+        self.assertIn("<noscript>", page)
+
+    def test_picker_lists_every_box_with_counts(self) -> None:
+        page = deck.render_page(deck.DeckData(cards=self.cards()))
+        options = self.options(page)
+        self.assertEqual([value for value, _, _ in options], ["", "beta", "creative"])
+        labels = {value: label for value, _, label in options}
+        self.assertEqual(labels["creative"], "creative (2)")
+        self.assertEqual(labels["beta"], "beta (1)")
+        self.assertEqual(labels[""], "All boxes (3)")
+
+    def test_all_boxes_is_selected_without_a_filter(self) -> None:
+        page = deck.render_page(deck.DeckData(cards=self.cards()))
+        self.assertIn('<option value="" selected>All boxes (3)</option>', page)
+
+    def test_active_box_is_selected(self) -> None:
+        page = deck.render_page(
+            deck.DeckData(cards=self.cards(), filters=("creative",), hidden=1)
+        )
+        self.assertIn('value="creative" selected', page)
+        self.assertNotIn('<option value="" selected>', page)
+
+    def test_several_active_boxes_are_stated_not_faked(self) -> None:
+        page = deck.render_page(
+            deck.DeckData(cards=self.cards(), filters=("creative", "beta"), hidden=0)
+        )
+        self.assertIn('value="" disabled selected>boxes: creative, beta', page)
+        self.assertNotIn('value="creative" selected', page)
+
+    def test_picker_offers_every_box_even_when_filtered(self) -> None:
+        data = deck.DeckData(cards=self.cards(), inventory={"creative": 2, "beta": 1})
+        filtered = deck.apply_box_filter(data, ["creative"])
+        self.assertEqual(len(filtered.cards), 2)
+        self.assertEqual(filtered.hidden, 1)
+        self.assertEqual(filtered.inventory, {"creative": 2, "beta": 1})
+        page = deck.render_page(filtered)
+        values = [value for value, _, _ in self.options(page)]
+        self.assertEqual(values, ["", "beta", "creative"])
+        self.assertIn("All boxes (3)", page)
+
+    def test_apply_box_filter_leaves_the_original_alone(self) -> None:
+        data = deck.DeckData(cards=self.cards(), inventory={"creative": 2})
+        deck.apply_box_filter(data, ["beta"])
+        self.assertEqual(len(data.cards), 3)
+        self.assertEqual(data.filters, ())
+        self.assertEqual(data.hidden, 0)
+
+    def test_picker_escapes_box_names(self) -> None:
+        page = deck.render_page(
+            deck.DeckData(cards=[], inventory={"<script>x</script>": 2})
+        )
+        self.assertNotIn("<script>", page)
+        self.assertIn("&lt;script&gt;x&lt;/script&gt;", page)
+
+    def test_json_advertises_the_full_inventory(self) -> None:
+        data = deck.DeckData(
+            cards=self.cards()[:1], inventory={"creative": 2, "beta": 1}
+        )
+        payload = deck.json_payload(deck.apply_box_filter(data, ["creative"]))
+        self.assertEqual(payload["counts"]["inventory"], {"creative": 2, "beta": 1})
+        self.assertEqual(payload["counts"]["by_box"], {"creative": 1})
+
+    # --- over HTTP ---------------------------------------------------------
+
+    def fake_home_deck(self, tmp: str) -> deck.DeckData:
+        return deck.build_deck(
+            PROJECT_ROOT,
+            hermes_home=make_hermes_home(Path(tmp)),
+            all_profiles=True,
+            include_framework=False,
+        )
+
+    def test_query_box_filters_the_page(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_deck_server(self.fake_home_deck(tmp)) as base,
+        ):
+            page = fetch(f"{base}/?box=creative")
+        self.assertEqual(page.count('class="card '), 1)
+        self.assertIn("in box creative (3 hidden)", page)
+        self.assertIn('value="creative" selected', page)
+        self.assertIn("All boxes (4)", page)
+
+    def test_query_box_repeats_and_hits_the_json_endpoint(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_deck_server(self.fake_home_deck(tmp)) as base,
+        ):
+            payload = json.loads(fetch(f"{base}/skills.json?box=creative&box=beta"))
+        counts = payload["counts"]
+        self.assertEqual(counts["box_filter"], ["creative", "beta"])
+        self.assertEqual(counts["total"], 2)
+        self.assertEqual(counts["hidden_by_filter"], 2)
+        self.assertEqual(counts["by_box"], {"beta": 1, "creative": 1})
+        self.assertEqual(
+            counts["inventory"],
+            {"beta": 1, "creative": 1, "linked-skill": 1, "standalone": 1},
+        )
+
+    def test_empty_box_param_means_no_filter(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_deck_server(self.fake_home_deck(tmp)) as base,
+        ):
+            payload = json.loads(fetch(f"{base}/skills.json?box="))
+        self.assertEqual(payload["counts"]["total"], 4)
+        self.assertEqual(payload["counts"]["box_filter"], [])
+
+    def test_cli_default_applies_until_the_url_overrides_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self.fake_home_deck(tmp)
+            with run_deck_server(data, default_boxes=("creative",)) as base:
+                default = json.loads(fetch(f"{base}/skills.json"))
+                cleared = json.loads(fetch(f"{base}/skills.json?box="))
+                switched = json.loads(fetch(f"{base}/skills.json?box=beta"))
+        self.assertEqual(default["counts"]["total"], 1)
+        self.assertEqual(default["counts"]["box_filter"], ["creative"])
+        self.assertEqual(cleared["counts"]["total"], 4)
+        self.assertEqual(switched["counts"]["box_filter"], ["beta"])
+
+    def test_unknown_path_still_404s_with_a_query(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_deck_server(self.fake_home_deck(tmp)) as base,
+            self.assertRaises(urllib.error.HTTPError) as caught,
+        ):
+            fetch(f"{base}/nope?box=creative")
+        self.assertEqual(caught.exception.code, 404)
 
 
 if __name__ == "__main__":

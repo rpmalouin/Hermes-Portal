@@ -28,7 +28,7 @@ hermes/
     deck.py          Skill Deck web UI: this project + the running Hermes agent
 tests/
   __init__.py
-  test_smoke.py      84 tests, unittest only
+  test_smoke.py      98 tests, unittest only
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -284,6 +284,33 @@ contained, so a filtered deck still says how much of the whole it is showing.
 `--list` with no `--box` prints the box breakdown, which is the easiest way to
 find a name to pass in.
 
+### The box dropdown
+
+The page header carries a **Box** dropdown listing every box with its count, plus
+`All boxes (154)`. It is a plain GET form -- `onchange` submits it, and a
+`<noscript>` Apply button covers browsers with JavaScript off -- so the filter
+lands in the URL and can be bookmarked or shared:
+
+```
+http://127.0.0.1:8765/?box=creative
+http://127.0.0.1:8765/?box=creative&box=apple      # repeatable
+http://127.0.0.1:8765/skills.json?box=mlops/evaluation
+http://127.0.0.1:8765/?box=                         # blank clears the filter
+```
+
+`?box=` works on `/` and `/skills.json` alike, and the **URL beats `--box`**:
+the flag only decides which view the server starts on, so choosing "All boxes"
+in the dropdown really does clear a `--box` you launched with.
+
+Two details keep the control honest. Options come from the *pre-filter*
+inventory, so every box stays reachable after a filter is applied rather than
+disappearing once selected; and when two or more boxes are active at once
+(reachable only from `--box creative --box apple`) the picker shows a disabled
+`boxes: creative, apple` entry instead of pretending one of them is the whole
+selection. Nothing here duplicates the matching rule -- the dropdown sends
+`?box=`, the server calls the same `filter_cards()` the CLI uses, and one
+filesystem scan serves every view.
+
 Which skills appear:
 
 | Source | Read from | Count on the machine this was built on |
@@ -324,7 +351,7 @@ self-explaining.
 
 ```sh
 cd <project-root>
-python3 -m unittest discover -s tests -t .   # 84 tests, ~1.9s
+python3 -m unittest discover -s tests -t .   # 98 tests, ~5.0s
 python3 -m unittest tests.test_smoke         # same suite
 python3 tests/test_smoke.py                  # works directly too
 

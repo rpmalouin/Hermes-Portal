@@ -10,7 +10,10 @@ The page shows cards from two sources:
 
 Endpoints: ``/`` (or ``/index.html``) renders the card grid, ``/skills.json``
 returns the same cards as JSON so a script can check what is loaded instead of
-counting divs.
+counting divs.  Both accept ``?box=NAME`` (repeatable), and the page carries a
+box dropdown that re-filters over the URL, so the matching rule still lives in
+exactly one place: :func:`filter_cards`.  The dropdown is a plain GET form whose
+``onchange`` submits it, with a ``<noscript>`` button for browsers without JS.
 
 Run with::
 
@@ -43,8 +46,9 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from string import Template
@@ -117,6 +121,7 @@ class DeckData:
     dropped: int = 0
     filters: tuple[str, ...] = ()
     hidden: int = 0
+    inventory: dict[str, int] = field(default_factory=dict)
 
 
 def _unquote(value: str) -> str:
@@ -373,6 +378,24 @@ def filter_cards(cards: Sequence[Card], boxes: Sequence[str]) -> tuple[list[Card
     return kept, len(cards) - len(kept)
 
 
+def apply_box_filter(data: DeckData, boxes: Sequence[str]) -> DeckData:
+    """Return *data* with *boxes* applied, keeping the full inventory.
+
+    The HTTP handler keeps one unfiltered deck and calls this per request, so a
+    filtered view costs no extra filesystem scan.
+
+    Args:
+        data: A deck, usually the unfiltered one.
+        boxes: Box or category names to keep; blank values are ignored.
+
+    Returns:
+        A copy with the filtered cards, the active filters and the hidden count
+        updated; sources and inventory are carried over untouched.
+    """
+    kept, hidden = filter_cards(data.cards, boxes)
+    return replace(data, cards=kept, filters=tuple(boxes), hidden=hidden)
+
+
 def framework_cards(root: Path) -> list[Card]:
     """Cards for the ``skill.json`` skills registered under *root*."""
     runtime = Runtime(Path(root))
@@ -442,6 +465,7 @@ def build_deck(
 
     kept.sort(key=sort_key)
 
+    inventory = _count_by_box(kept)
     filtered, hidden = filter_cards(kept, boxes)
     return DeckData(
         cards=filtered,
@@ -449,6 +473,7 @@ def build_deck(
         dropped=dropped,
         filters=tuple(boxes),
         hidden=hidden,
+        inventory=inventory,
     )
 
 
@@ -471,6 +496,20 @@ HTML_TEMPLATE = Template(
         background: #16213e; font-size: 0.95rem; line-height: 1.7;
     }
     .stats strong { color: #e94560; }
+    form.picker {
+        align-items: center; display: flex; flex-wrap: wrap; gap: 0.6rem;
+        margin: 0 0 1rem;
+    }
+    form.picker label { color: #8a8fa3; font-size: 0.85rem; }
+    form.picker select {
+        background: #16213e; color: #eee; border: 1px solid #0f3460;
+        border-radius: 8px; font-size: 0.9rem; min-width: 18rem;
+        padding: 0.4rem 0.5rem;
+    }
+    form.picker button {
+        background: #16213e; color: #eee; border: 1px solid #0f3460;
+        border-radius: 8px; font-size: 0.9rem; padding: 0.4rem 0.7rem;
+    }
     details.sources { margin-bottom: 1.5rem; padding: 0 0.25rem; }
     details.sources summary { color: #8a8fa3; cursor: pointer; font-size: 0.85rem; }
     details.sources ul { margin: 0.6rem 0 0; padding-left: 1.4rem; }
@@ -507,6 +546,13 @@ HTML_TEMPLATE = Template(
 </head>
 <body>
     <h1>Hermes Skill Deck</h1>
+    <form class="picker" method="get" action="/">
+        <label for="box">Box</label>
+        <select id="box" name="box" onchange="this.form.submit()">
+$box_options
+        </select>
+        <noscript><button type="submit">Apply</button></noscript>
+    </form>
     <div class="stats">
         <strong>$total</strong> skills ($framework framework, $hermes hermes)
         across <strong>$boxes</strong> boxes$dropped$filtered
@@ -544,6 +590,39 @@ def _rich(text: str, limit: int = DESCRIPTION_LIMIT) -> str:
     escaped = html.escape(flat, quote=True)
     escaped = _CODE_RE.sub(r"<code>\1</code>", escaped)
     return _BOLD_RE.sub(r"<strong>\1</strong>", escaped)
+
+
+def render_box_picker(data: DeckData) -> str:
+    """Render the option list of the box dropdown.
+
+    Options come from the *pre-filter* inventory, so every box stays reachable
+    after a filter is applied, and the active one is marked selected.  With more
+    than one box active (reachable only via --box) a disabled first option states
+    the real filter instead of misrepresenting it as a single selection.
+    """
+    inventory = data.inventory or _count_by_box(data.cards)
+    active = [value.strip().lower() for value in data.filters if value.strip()]
+    sole = active[0] if len(active) == 1 else None
+
+    options: list[str] = []
+    if len(active) > 1:
+        label = html.escape(", ".join(data.filters), quote=True)
+        options.append(
+            f'            <option value="" disabled selected>boxes: {label}</option>'
+        )
+    total = sum(inventory.values())
+    options.append(
+        f'<option value=""{" selected" if not active else ""}>'
+        f"All boxes ({total})</option>"
+    )
+    for box, count in sorted(inventory.items()):
+        selected = " selected" if sole is not None and box.lower() == sole else ""
+        escaped_box = html.escape(box, quote=True)
+        label = html.escape(box)
+        options.append(
+            f'<option value="{escaped_box}"{selected}>{label} ({count})</option>'
+        )
+    return "\n".join(options)
 
 
 def render_card(card: Card) -> str:
@@ -604,6 +683,7 @@ def render_page(data: DeckData) -> str:
         present=sum(1 for status in data.sources if status.present),
         searched=len(data.sources),
         source_items=source_items,
+        box_options=render_box_picker(data),
         cards=cards,
     )
 
@@ -630,6 +710,7 @@ def json_payload(data: DeckData) -> dict[str, Any]:
             "box_filter": list(data.filters),
             "hidden_by_filter": data.hidden,
             "by_box": _count_by_box(data.cards),
+            "inventory": data.inventory or _count_by_box(data.cards),
         },
         "sources": [
             {
@@ -657,19 +738,46 @@ def json_payload(data: DeckData) -> dict[str, Any]:
 
 
 class DeckHandler(BaseHTTPRequestHandler):
-    """HTTP handler serving the deck at ``/`` and its data at ``/skills.json``."""
+    """HTTP handler serving the deck at ``/`` and its data at ``/skills.json``.
+
+    ``data`` is the unfiltered deck (one filesystem scan per process) and
+    ``default_boxes`` is the ``--box`` filter given on the command line.  A
+    ``?box=`` in the request overrides it -- that is what the page's dropdown
+    sends, so the CLI flag sets the starting view and the URL changes it.
+    """
 
     data: DeckData = DeckData()
+    default_boxes: tuple[str, ...] = ()
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
         """Answer ``/`` with HTML and ``/skills.json`` with the card payload."""
-        if self.path in ("/", "/index.html"):
-            self._respond("text/html; charset=utf-8", render_page(self.data).encode())
-        elif self.path in ("/skills.json", "/api/skills"):
-            payload = json.dumps(json_payload(self.data), indent=2) + "\n"
+        parsed = urllib.parse.urlsplit(self.path)
+        data = self._filtered(self._requested_boxes(parsed.query))
+
+        if parsed.path in ("/", "/index.html"):
+            self._respond("text/html; charset=utf-8", render_page(data).encode())
+        elif parsed.path in ("/skills.json", "/api/skills"):
+            payload = json.dumps(json_payload(data), indent=2) + "\n"
             self._respond("application/json; charset=utf-8", payload.encode())
         else:
             self.send_error(404, "Not Found")
+
+    def _requested_boxes(self, query: str) -> tuple[str, ...]:
+        """Boxes asked for by the query string; the URL beats ``--box``.
+
+        Blank values mean *no* filter, not a filter on the empty string:
+        ``?box=`` is what the dropdown's "All boxes" entry submits.
+        """
+        params = urllib.parse.parse_qs(query, keep_blank_values=True)
+        if "box" not in params:
+            return self.default_boxes
+        return tuple(value for value in params["box"] if value.strip())
+
+    def _filtered(self, boxes: tuple[str, ...]) -> DeckData:
+        """Return the deck for this request, scanning nothing extra."""
+        if not boxes:
+            return self.data
+        return apply_box_filter(self.data, boxes)
 
     def _respond(self, content_type: str, body: bytes) -> None:
         """Send a 200 response with *body*."""
@@ -727,24 +835,25 @@ def serve(
         profile: Named Hermes profile to read skills from.
         all_profiles: Also read every profile under the Hermes home.
         include_framework: Include this project's ``skill.json`` skills.
-        boxes: Keep only cards in these boxes or category paths.
+        boxes: Initial box filter.  The page's dropdown overrides it per request
+            through ``?box=``, so this only decides the view the server starts on.
 
     Returns:
         ``0`` on a clean shutdown.
     """
-    data = build_deck(
+    base = build_deck(
         root,
         hermes_home=hermes_home,
         profile=profile,
         all_profiles=all_profiles,
         include_framework=include_framework,
-        boxes=boxes,
     )
-    DeckHandler.data = data
+    DeckHandler.data = base
+    DeckHandler.default_boxes = tuple(boxes)
 
     server = ThreadingHTTPServer((host, port), DeckHandler)
     bound_host, bound_port = server.server_address[:2]
-    print(describe(data))
+    print(describe(apply_box_filter(base, boxes) if boxes else base))
     print(f"Hermes Skill Deck running at http://{bound_host}:{bound_port}")
     print("Press Ctrl+C to stop.")
     try:
