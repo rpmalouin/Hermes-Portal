@@ -25,7 +25,7 @@ hermes/
     shell.py         interactive `hermes>` REPL
   web/
     __init__.py
-    deck.py          Skill Deck web UI: this project + the running Hermes agent
+    skill_deck.py    Skill Deck web UI: this project + the running Hermes agent
 tests/
   __init__.py
   test_smoke.py      98 tests, unittest only
@@ -253,9 +253,13 @@ every skill it runs.
 
 ## Web Skill Deck
 
+`hermes/web/` is one module per web view; `skill_deck.py` is the first. A new
+view is a new module beside it, added to `hermes/web/__init__.py`'s `__all__` and,
+if it deserves a command, to `[project.scripts]` in `pyproject.toml`.
+
 ```sh
-python3 -m hermes.web.deck            # this project + the running Hermes agent
-python3 -m hermes.web.deck --list     # print what would be shown, then exit
+python3 -m hermes.web.skill_deck      # this project + the running Hermes agent
+python3 -m hermes.web.skill_deck --list   # print what would be shown, then exit
 .venv/bin/hermes-deck --port 9000     # installed console script, any directory
 ```
 
@@ -270,10 +274,10 @@ script can check the load instead of counting `<div>`s. Flags: `--root`,
 a **category path**, which narrows further:
 
 ```sh
-python3 -m hermes.web.deck --list --box software-development   # 28 skills
-python3 -m hermes.web.deck --list --box mlops/evaluation       # 2 skills
-python3 -m hermes.web.deck --box creative --box apple          # 21 skills, 133 hidden
-python3 -m hermes.web.deck --list                              # lists every box + count
+python3 -m hermes.web.skill_deck --list --box software-development  # 28 skills
+python3 -m hermes.web.skill_deck --list --box mlops/evaluation      # 2 skills
+python3 -m hermes.web.skill_deck --box creative --box apple         # 21, 133 hidden
+python3 -m hermes.web.skill_deck --list                             # every box + count
 ```
 
 Matching is case-insensitive on the card's box (`creative`) or its category path

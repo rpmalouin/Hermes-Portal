@@ -1,5 +1,7 @@
 """Web-based Skill Deck UI for Hermes-Dashboard (standard library only).
 
+``hermes/web`` holds one module per web view; this one serves the Skill Deck.
+
 The page shows cards from two sources:
 
 * **framework** -- the ``skill.json`` skills this project registers through
@@ -17,10 +19,10 @@ exactly one place: :func:`filter_cards`.  The dropdown is a plain GET form whose
 
 Run with::
 
-    python -m hermes.web.deck                    # this package + the running hermes
-    python -m hermes.web.deck --all-profiles     # every profile's skills as well
-    python -m hermes.web.deck --list             # print what would be shown, exit
-    python -m hermes.web.deck --port 9000 --no-framework
+    python -m hermes.web.skill_deck                 # this package + hermes
+    python -m hermes.web.skill_deck --all-profiles   # every profile too
+    python -m hermes.web.skill_deck --list           # print what would show
+    python -m hermes.web.skill_deck --port 9000 --no-framework
 
 Four discovery traps are handled here deliberately, because each one silently
 under-reports the deck:
@@ -868,7 +870,7 @@ def serve(
 def build_parser() -> argparse.ArgumentParser:
     """Build the deck's argument parser."""
     parser = argparse.ArgumentParser(
-        prog="python -m hermes.web.deck",
+        prog="python -m hermes.web.skill_deck",
         description="Serve the Hermes Skill Deck: this project's skills plus the "
         "running Hermes agent's skills.",
     )
@@ -918,7 +920,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for ``python -m hermes.web.deck``.
+    """Entry point for ``python -m hermes.web.skill_deck``.
 
     Args:
         argv: Argument list; defaults to ``sys.argv[1:]``.

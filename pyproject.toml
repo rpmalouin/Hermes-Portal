@@ -26,7 +26,7 @@ dependencies = []
 
 [project.scripts]
 hermes = "hermes.cli.shell:main"
-hermes-deck = "hermes.web.deck:main"
+hermes-deck = "hermes.web.skill_deck:main"
 
 [tool.setuptools]
 # Flat layout: the package lives at the project root exactly as specified.

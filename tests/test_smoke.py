@@ -35,7 +35,7 @@ from hermes.core.loader import load_skills  # noqa: E402
 from hermes.core.models import Skill, SkillResult  # noqa: E402
 from hermes.core.registry import SkillRegistry  # noqa: E402
 from hermes.core.runtime import Runtime, load_profile  # noqa: E402
-from hermes.web import deck  # noqa: E402
+from hermes.web import skill_deck  # noqa: E402
 
 PACKAGE_DIR = PROJECT_ROOT / "hermes"
 SKILLS_DIR = PACKAGE_DIR / "skills"
@@ -552,7 +552,7 @@ class TestDeckFrontmatter(unittest.TestCase):
     """SKILL.md frontmatter parsing: a documented subset, never a crash."""
 
     def test_simple_scalars(self) -> None:
-        fields, body = deck.split_frontmatter(
+        fields, body = skill_deck.split_frontmatter(
             "---\nname: ascii-art\ndescription: Draw with characters.\n---\n\n# Title\n"
         )
         self.assertEqual(fields["name"], "ascii-art")
@@ -560,14 +560,14 @@ class TestDeckFrontmatter(unittest.TestCase):
         self.assertIn("# Title", body)
 
     def test_quoted_values_are_unquoted(self) -> None:
-        fields = deck.parse_frontmatter(
+        fields = skill_deck.parse_frontmatter(
             "---\nname: \"ask-matt\"\nlicense: 'MIT'\n---\n"
         )
         self.assertEqual(fields["name"], "ask-matt")
         self.assertEqual(fields["license"], "MIT")
 
     def test_nested_blocks_and_comments_are_ignored(self) -> None:
-        fields = deck.parse_frontmatter(
+        fields = skill_deck.parse_frontmatter(
             "---\nname: demo\ndescription: d\nmetadata:\n  hermes:\n"
             "    tags: [a, b]\n# comment\nversion: 1.0.0\n---\nbody\n"
         )
@@ -577,12 +577,12 @@ class TestDeckFrontmatter(unittest.TestCase):
         self.assertNotIn("tags", fields)
 
     def test_no_frontmatter_returns_empty_fields(self) -> None:
-        fields, body = deck.split_frontmatter("# Just a heading\n")
+        fields, body = skill_deck.split_frontmatter("# Just a heading\n")
         self.assertEqual(fields, {})
         self.assertEqual(body, "# Just a heading\n")
 
     def test_unterminated_fence_is_not_frontmatter(self) -> None:
-        self.assertEqual(deck.parse_frontmatter("---\nname: demo\n"), {})
+        self.assertEqual(skill_deck.parse_frontmatter("---\nname: demo\n"), {})
 
 
 class TestDeckDiscovery(unittest.TestCase):
@@ -591,7 +591,7 @@ class TestDeckDiscovery(unittest.TestCase):
     def test_card_uses_heading_as_title_and_path_for_box(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            cards = deck.discover_skills(home / "skills", "test")
+            cards = skill_deck.discover_skills(home / "skills", "test")
             by_name = {card.name: card for card in cards}
             self.assertEqual(
                 sorted(by_name),
@@ -601,38 +601,42 @@ class TestDeckDiscovery(unittest.TestCase):
             self.assertEqual(nested.box, "creative")
             self.assertEqual(nested.category, "creative/ascii-art")
             self.assertEqual(nested.title, "Ascii Art")
-            self.assertEqual(nested.origin, deck.HERMES_ORIGIN)
+            self.assertEqual(nested.origin, skill_deck.HERMES_ORIGIN)
             self.assertTrue(nested.path.endswith("SKILL.md"))
 
     def test_symlinked_skill_directory_is_followed(self) -> None:
         # Path.rglob would miss this one entirely.
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            names = [c.name for c in deck.discover_skills(home / "skills", "test")]
+            names = [
+                c.name for c in skill_deck.discover_skills(home / "skills", "test")
+            ]
             self.assertIn("linked", names)
 
     def test_nested_skill_inside_a_skill_is_not_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            names = [c.name for c in deck.discover_skills(home / "skills", "test")]
+            names = [
+                c.name for c in skill_deck.discover_skills(home / "skills", "test")
+            ]
             self.assertNotIn("bogus", names)
 
     def test_missing_root_is_empty_not_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(deck.discover_skills(Path(tmp) / "nope", "test"), [])
+            self.assertEqual(skill_deck.discover_skills(Path(tmp) / "nope", "test"), [])
 
     def test_card_falls_back_to_directory_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_skill_dir(root, "no-frontmatter", title=None, with_frontmatter=False)
-            cards = deck.discover_skills(root, "test")
+            cards = skill_deck.discover_skills(root, "test")
             self.assertEqual([card.name for card in cards], ["no-frontmatter"])
             self.assertEqual(cards[0].description, "(no description)")
             self.assertEqual(cards[0].title, "No Frontmatter")
 
     def test_duplicates_by_name_and_path_are_dropped(self) -> None:
-        def card(name: str, origin: str, path: str, source: str) -> deck.Card:
-            return deck.Card(
+        def card(name: str, origin: str, path: str, source: str) -> skill_deck.Card:
+            return skill_deck.Card(
                 name, name.upper(), "d", "box", "box", origin, source, path
             )
 
@@ -640,7 +644,7 @@ class TestDeckDiscovery(unittest.TestCase):
         same_name = card("a", "hermes", "/y/SKILL.md", "s2")
         same_path = card("b", "hermes", "/x/SKILL.md", "s1")
         other_origin = card("a", "framework", "/z", "s")
-        kept, dropped = deck._dedupe([first, same_name, same_path, other_origin])
+        kept, dropped = skill_deck._dedupe([first, same_name, same_path, other_origin])
 
         # same_name is dropped by name, same_path by path; the framework
         # card shares the name but a different origin, so it survives.
@@ -656,8 +660,8 @@ class TestDeckRoots(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
             with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
-                self.assertEqual(deck.default_hermes_home(), home)
-                roots = deck.resolve_hermes_roots()
+                self.assertEqual(skill_deck.default_hermes_home(), home)
+                roots = skill_deck.resolve_hermes_roots()
             self.assertEqual([r.path for r in roots], [home / "skills"])
 
     def test_all_profiles_finds_siblings_when_home_is_a_profile(self) -> None:
@@ -666,13 +670,13 @@ class TestDeckRoots(unittest.TestCase):
             home = make_hermes_home(Path(tmp))
             profile_dir = home / "profiles" / "other"
             with mock.patch.dict(os.environ, {"HERMES_HOME": str(profile_dir)}):
-                roots = deck.resolve_hermes_roots(all_profiles=True)
+                roots = skill_deck.resolve_hermes_roots(all_profiles=True)
             self.assertEqual([r.path for r in roots], [profile_dir / "skills"])
 
     def test_all_profiles_skips_hidden_and_keeps_priority_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            roots = deck.resolve_hermes_roots(home, all_profiles=True)
+            roots = skill_deck.resolve_hermes_roots(home, all_profiles=True)
             self.assertEqual(
                 [r.path for r in roots],
                 [home / "skills", home / "profiles" / "other" / "skills"],
@@ -682,7 +686,9 @@ class TestDeckRoots(unittest.TestCase):
     def test_named_profile_reads_that_profile_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            roots = deck.resolve_hermes_roots(home, profile="other", all_profiles=True)
+            roots = skill_deck.resolve_hermes_roots(
+                home, profile="other", all_profiles=True
+            )
             self.assertEqual(
                 [r.path for r in roots], [home / "profiles" / "other" / "skills"]
             )
@@ -694,7 +700,7 @@ class TestDeckBuildAndRender(unittest.TestCase):
     def test_build_deck_counts_and_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            data = deck.build_deck(
+            data = skill_deck.build_deck(
                 PROJECT_ROOT,
                 hermes_home=home,
                 all_profiles=True,
@@ -708,14 +714,14 @@ class TestDeckBuildAndRender(unittest.TestCase):
 
     def test_build_deck_reports_a_missing_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            data = deck.build_deck(
+            data = skill_deck.build_deck(
                 PROJECT_ROOT,
                 hermes_home=Path(tmp) / "absent",
                 include_framework=False,
             )
             self.assertEqual(data.cards, [])
             self.assertFalse(data.sources[0].present)
-            self.assertIn("[MISSING]", deck.describe(data))
+            self.assertIn("[MISSING]", skill_deck.describe(data))
 
     def test_unreadable_skill_file_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -724,12 +730,12 @@ class TestDeckBuildAndRender(unittest.TestCase):
             bad.mkdir()
             (bad / "SKILL.md").symlink_to(root / "gone" / "SKILL.md")
             good = write_skill_dir(root, "good", title="Good")
-            cards = deck.discover_skills(root, "test")
+            cards = skill_deck.discover_skills(root, "test")
             self.assertEqual([card.name for card in cards], ["good"])
             self.assertTrue(good.is_dir())
 
     def test_render_escapes_skill_text(self) -> None:
-        card = deck.Card(
+        card = skill_deck.Card(
             name="evil",
             title="<script>alert(1)</script>",
             description="uses <html> & `--flags` **bold**",
@@ -739,7 +745,7 @@ class TestDeckBuildAndRender(unittest.TestCase):
             source="running hermes",
             path="/tmp/SKILL.md",
         )
-        page = deck.render_page(deck.DeckData(cards=[card], sources=[]))
+        page = skill_deck.render_page(skill_deck.DeckData(cards=[card], sources=[]))
         self.assertNotIn("<script>alert(1)</script>", page)
         self.assertIn("&lt;script&gt;", page)
         self.assertIn("&amp;", page)
@@ -748,12 +754,16 @@ class TestDeckBuildAndRender(unittest.TestCase):
 
     def test_render_reports_counts_origins_and_boxes(self) -> None:
         cards = [
-            deck.Card("a", "A", "d", "box-one", "box-one", "framework", "s", "/a"),
-            deck.Card("b", "B", "d", "box-two", "box-two", "hermes", "s", "/b"),
-            deck.Card("c", "C", "d", "box-two", "box-two", "hermes", "s", "/c"),
+            skill_deck.Card(
+                "a", "A", "d", "box-one", "box-one", "framework", "s", "/a"
+            ),
+            skill_deck.Card("b", "B", "d", "box-two", "box-two", "hermes", "s", "/b"),
+            skill_deck.Card("c", "C", "d", "box-two", "box-two", "hermes", "s", "/c"),
         ]
-        sources = [deck.SourceStatus("running hermes", Path("/nowhere"))]
-        page = deck.render_page(deck.DeckData(cards=cards, sources=sources, dropped=7))
+        sources = [skill_deck.SourceStatus("running hermes", Path("/nowhere"))]
+        page = skill_deck.render_page(
+            skill_deck.DeckData(cards=cards, sources=sources, dropped=7)
+        )
         self.assertIn("<strong>3</strong> skills", page)
         self.assertIn("1 framework, 2 hermes", page)
         self.assertIn("<strong>2</strong> boxes", page)
@@ -764,15 +774,17 @@ class TestDeckBuildAndRender(unittest.TestCase):
         self.assertIn('class="card hermes"', page)
 
     def test_render_empty_deck_says_so(self) -> None:
-        page = deck.render_page(deck.DeckData())
+        page = skill_deck.render_page(skill_deck.DeckData())
         self.assertIn("No skills found", page)
 
     def test_json_payload_shape(self) -> None:
-        card = deck.Card("a", "A", "d", "box", "box", "hermes", "s", "/a")
-        payload = deck.json_payload(
-            deck.DeckData(
+        card = skill_deck.Card("a", "A", "d", "box", "box", "hermes", "s", "/a")
+        payload = skill_deck.json_payload(
+            skill_deck.DeckData(
                 cards=[card],
-                sources=[deck.SourceStatus("running hermes", Path("/nowhere"), 1)],
+                sources=[
+                    skill_deck.SourceStatus("running hermes", Path("/nowhere"), 1)
+                ],
                 dropped=2,
             )
         )
@@ -782,36 +794,36 @@ class TestDeckBuildAndRender(unittest.TestCase):
         self.assertEqual(payload["cards"][0]["name"], "a")
 
     def test_describe_mentions_every_source(self) -> None:
-        data = deck.build_deck(
+        data = skill_deck.build_deck(
             PROJECT_ROOT,
             hermes_home=Path("/definitely/absent"),
             include_framework=False,
         )
-        self.assertIn("0 skills", deck.describe(data))
-        self.assertIn("/definitely/absent", deck.describe(data))
+        self.assertIn("0 skills", skill_deck.describe(data))
+        self.assertIn("/definitely/absent", skill_deck.describe(data))
 
 
 class TestDeckServer(unittest.TestCase):
     """The HTTP surface, exercised for real over a socket."""
 
     def setUp(self) -> None:
-        self._saved = deck.DeckHandler.data
+        self._saved = skill_deck.DeckHandler.data
 
     def tearDown(self) -> None:
-        deck.DeckHandler.data = self._saved
+        skill_deck.DeckHandler.data = self._saved
 
     def test_serves_html_json_and_404(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            data = deck.build_deck(
+            data = skill_deck.build_deck(
                 PROJECT_ROOT,
                 hermes_home=home,
                 all_profiles=True,
                 include_framework=False,
             )
-            deck.DeckHandler.data = data
+            skill_deck.DeckHandler.data = data
 
-            server = ThreadingHTTPServer(("127.0.0.1", 0), deck.DeckHandler)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), skill_deck.DeckHandler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
@@ -844,8 +856,8 @@ class TestDeckBoxFilter(unittest.TestCase):
     """The --box filter: box names, category paths, repeats, and reporting."""
 
     @staticmethod
-    def card(name: str, box: str, category: str | None = None) -> deck.Card:
-        return deck.Card(
+    def card(name: str, box: str, category: str | None = None) -> skill_deck.Card:
+        return skill_deck.Card(
             name=name,
             title=name,
             description="d",
@@ -866,47 +878,47 @@ class TestDeckBoxFilter(unittest.TestCase):
         ]
 
     def test_no_filter_keeps_everything(self) -> None:
-        kept, hidden = deck.filter_cards(self.cards, [])
+        kept, hidden = skill_deck.filter_cards(self.cards, [])
         self.assertEqual(len(kept), 5)
         self.assertEqual(hidden, 0)
 
     def test_blank_values_are_ignored(self) -> None:
-        kept, hidden = deck.filter_cards(self.cards, ["", "   "])
+        kept, hidden = skill_deck.filter_cards(self.cards, ["", "   "])
         self.assertEqual(len(kept), 5)
         self.assertEqual(hidden, 0)
 
     def test_box_name_matches_case_insensitively(self) -> None:
-        kept, hidden = deck.filter_cards(self.cards, ["CREATIVE"])
+        kept, hidden = skill_deck.filter_cards(self.cards, ["CREATIVE"])
         self.assertEqual([card.name for card in kept], ["ascii-art", "p5js"])
         self.assertEqual(hidden, 3)
 
     def test_category_path_narrows_within_a_box(self) -> None:
-        kept, _ = deck.filter_cards(self.cards, ["mlops/inference"])
+        kept, _ = skill_deck.filter_cards(self.cards, ["mlops/inference"])
         self.assertEqual([card.name for card in kept], ["vllm"])
 
     def test_category_path_selects_only_its_own_branch(self) -> None:
-        kept, _ = deck.filter_cards(self.cards, ["mlops/evaluation"])
+        kept, _ = skill_deck.filter_cards(self.cards, ["mlops/evaluation"])
         self.assertEqual([card.name for card in kept], ["harness"])
         self.assertEqual(
-            deck.filter_cards(self.cards, ["mlops/evaluation/deeper"])[0], []
+            skill_deck.filter_cards(self.cards, ["mlops/evaluation/deeper"])[0], []
         )
 
     def test_repeated_boxes_are_a_union(self) -> None:
-        kept, hidden = deck.filter_cards(self.cards, ["creative", "dev"])
+        kept, hidden = skill_deck.filter_cards(self.cards, ["creative", "dev"])
         self.assertEqual(
             [card.name for card in kept], ["ascii-art", "p5js", "example_skill"]
         )
         self.assertEqual(hidden, 2)
 
     def test_no_match_hides_everything(self) -> None:
-        kept, hidden = deck.filter_cards(self.cards, ["nope"])
+        kept, hidden = skill_deck.filter_cards(self.cards, ["nope"])
         self.assertEqual(kept, [])
         self.assertEqual(hidden, 5)
 
     def test_build_deck_filters_but_sources_still_report_full_scans(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = make_hermes_home(Path(tmp))
-            data = deck.build_deck(
+            data = skill_deck.build_deck(
                 PROJECT_ROOT,
                 hermes_home=home,
                 all_profiles=True,
@@ -919,8 +931,8 @@ class TestDeckBoxFilter(unittest.TestCase):
             self.assertEqual([status.found for status in data.sources], [3, 1])
 
     def test_render_shows_the_active_filter(self) -> None:
-        page = deck.render_page(
-            deck.DeckData(
+        page = skill_deck.render_page(
+            skill_deck.DeckData(
                 cards=[self.card("ascii-art", "creative")],
                 sources=[],
                 filters=("creative",),
@@ -931,8 +943,8 @@ class TestDeckBoxFilter(unittest.TestCase):
         self.assertIn("(7 hidden)", page)
 
     def test_render_pluralises_multiple_boxes(self) -> None:
-        page = deck.render_page(
-            deck.DeckData(
+        page = skill_deck.render_page(
+            skill_deck.DeckData(
                 cards=[self.card("ascii-art", "creative")],
                 sources=[],
                 filters=("creative", "apple"),
@@ -942,18 +954,20 @@ class TestDeckBoxFilter(unittest.TestCase):
         self.assertIn("in boxes creative, apple", page)
 
     def test_render_explains_an_empty_filtered_deck(self) -> None:
-        page = deck.render_page(deck.DeckData(filters=("nope",), hidden=5))
+        page = skill_deck.render_page(skill_deck.DeckData(filters=("nope",), hidden=5))
         self.assertIn("No skills in --box nope", page)
         self.assertNotIn("or point --hermes-home", page)
 
     def test_render_escapes_the_filter_value(self) -> None:
-        page = deck.render_page(deck.DeckData(filters=("<script>",), hidden=1))
+        page = skill_deck.render_page(
+            skill_deck.DeckData(filters=("<script>",), hidden=1)
+        )
         self.assertNotIn("<script>", page)
         self.assertIn("&lt;script&gt;", page)
 
     def test_json_reports_filter_state_and_box_breakdown(self) -> None:
-        payload = deck.json_payload(
-            deck.DeckData(
+        payload = skill_deck.json_payload(
+            skill_deck.DeckData(
                 cards=[self.card("ascii-art", "creative")],
                 sources=[],
                 filters=("creative",),
@@ -965,13 +979,13 @@ class TestDeckBoxFilter(unittest.TestCase):
         self.assertEqual(payload["counts"]["by_box"], {"creative": 1})
 
     def test_describe_reports_filter_hidden_and_boxes(self) -> None:
-        data = deck.DeckData(
+        data = skill_deck.DeckData(
             cards=[self.card("ascii-art", "creative")],
             sources=[],
             filters=("creative",),
             hidden=9,
         )
-        summary = deck.describe(data)
+        summary = skill_deck.describe(data)
         self.assertIn("filter: --box creative (9 hidden)", summary)
         self.assertIn("   1  creative", summary)
 
@@ -980,7 +994,7 @@ class TestDeckBoxFilter(unittest.TestCase):
             home = make_hermes_home(Path(tmp))
             out = io.StringIO()
             with redirect_stdout(out):
-                code = deck.main(
+                code = skill_deck.main(
                     [
                         "--list",
                         "--no-framework",
@@ -1006,7 +1020,9 @@ class TestDeckBoxFilter(unittest.TestCase):
             home = make_hermes_home(Path(tmp))
             out = io.StringIO()
             with redirect_stdout(out):
-                deck.main(["--list", "--no-framework", "--hermes-home", str(home)])
+                skill_deck.main(
+                    ["--list", "--no-framework", "--hermes-home", str(home)]
+                )
             printed = out.getvalue()
 
         self.assertIn("3 skills", printed)
@@ -1020,7 +1036,7 @@ class TestDeckBoxFilter(unittest.TestCase):
             home = make_hermes_home(Path(tmp))
             out = io.StringIO()
             with redirect_stdout(out):
-                deck.main(
+                skill_deck.main(
                     [
                         "--list",
                         "--no-framework",
@@ -1036,16 +1052,16 @@ class TestDeckBoxFilter(unittest.TestCase):
 
 
 @contextmanager
-def run_deck_server(data: deck.DeckData, default_boxes: tuple[str, ...] = ()):
+def run_deck_server(data: skill_deck.DeckData, default_boxes: tuple[str, ...] = ()):
     """Yield the base URL of a deck server on an ephemeral port.
 
     Restores the handler's class-level state on exit, so tests cannot leak a
     deck or a default filter into each other.
     """
-    saved = (deck.DeckHandler.data, deck.DeckHandler.default_boxes)
-    deck.DeckHandler.data = data
-    deck.DeckHandler.default_boxes = default_boxes
-    server = ThreadingHTTPServer(("127.0.0.1", 0), deck.DeckHandler)
+    saved = (skill_deck.DeckHandler.data, skill_deck.DeckHandler.default_boxes)
+    skill_deck.DeckHandler.data = data
+    skill_deck.DeckHandler.default_boxes = default_boxes
+    server = ThreadingHTTPServer(("127.0.0.1", 0), skill_deck.DeckHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -1054,7 +1070,7 @@ def run_deck_server(data: deck.DeckData, default_boxes: tuple[str, ...] = ()):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-        deck.DeckHandler.data, deck.DeckHandler.default_boxes = saved
+        skill_deck.DeckHandler.data, skill_deck.DeckHandler.default_boxes = saved
 
 
 def fetch(url: str) -> str:
@@ -1066,9 +1082,9 @@ def fetch(url: str) -> str:
 class TestDeckBoxPicker(unittest.TestCase):
     """The box dropdown and the ?box= query that backs it."""
 
-    def cards(self) -> list[deck.Card]:
+    def cards(self) -> list[skill_deck.Card]:
         return [
-            deck.Card(
+            skill_deck.Card(
                 "ascii-art",
                 "A",
                 "d",
@@ -1078,10 +1094,10 @@ class TestDeckBoxPicker(unittest.TestCase):
                 "s",
                 "/a",
             ),
-            deck.Card(
+            skill_deck.Card(
                 "p5js", "P", "d", "creative", "creative/p5js", "hermes", "s", "/b"
             ),
-            deck.Card("beta", "B", "d", "beta", "beta", "hermes", "s", "/c"),
+            skill_deck.Card("beta", "B", "d", "beta", "beta", "hermes", "s", "/c"),
         ]
 
     def options(self, page: str) -> list[tuple[str, str, str]]:
@@ -1090,7 +1106,7 @@ class TestDeckBoxPicker(unittest.TestCase):
         return re.findall(r'<option value="([^"]*)"( selected)?>([^<]+)</option>', page)
 
     def test_picker_is_a_get_form_that_submits_on_change(self) -> None:
-        page = deck.render_page(deck.DeckData(cards=self.cards()))
+        page = skill_deck.render_page(skill_deck.DeckData(cards=self.cards()))
         self.assertIn('<form class="picker" method="get" action="/"', page)
         self.assertIn(
             '<select id="box" name="box" onchange="this.form.submit()">', page
@@ -1098,7 +1114,7 @@ class TestDeckBoxPicker(unittest.TestCase):
         self.assertIn("<noscript>", page)
 
     def test_picker_lists_every_box_with_counts(self) -> None:
-        page = deck.render_page(deck.DeckData(cards=self.cards()))
+        page = skill_deck.render_page(skill_deck.DeckData(cards=self.cards()))
         options = self.options(page)
         self.assertEqual([value for value, _, _ in options], ["", "beta", "creative"])
         labels = {value: label for value, _, label in options}
@@ -1107,60 +1123,66 @@ class TestDeckBoxPicker(unittest.TestCase):
         self.assertEqual(labels[""], "All boxes (3)")
 
     def test_all_boxes_is_selected_without_a_filter(self) -> None:
-        page = deck.render_page(deck.DeckData(cards=self.cards()))
+        page = skill_deck.render_page(skill_deck.DeckData(cards=self.cards()))
         self.assertIn('<option value="" selected>All boxes (3)</option>', page)
 
     def test_active_box_is_selected(self) -> None:
-        page = deck.render_page(
-            deck.DeckData(cards=self.cards(), filters=("creative",), hidden=1)
+        page = skill_deck.render_page(
+            skill_deck.DeckData(cards=self.cards(), filters=("creative",), hidden=1)
         )
         self.assertIn('value="creative" selected', page)
         self.assertNotIn('<option value="" selected>', page)
 
     def test_several_active_boxes_are_stated_not_faked(self) -> None:
-        page = deck.render_page(
-            deck.DeckData(cards=self.cards(), filters=("creative", "beta"), hidden=0)
+        page = skill_deck.render_page(
+            skill_deck.DeckData(
+                cards=self.cards(), filters=("creative", "beta"), hidden=0
+            )
         )
         self.assertIn('value="" disabled selected>boxes: creative, beta', page)
         self.assertNotIn('value="creative" selected', page)
 
     def test_picker_offers_every_box_even_when_filtered(self) -> None:
-        data = deck.DeckData(cards=self.cards(), inventory={"creative": 2, "beta": 1})
-        filtered = deck.apply_box_filter(data, ["creative"])
+        data = skill_deck.DeckData(
+            cards=self.cards(), inventory={"creative": 2, "beta": 1}
+        )
+        filtered = skill_deck.apply_box_filter(data, ["creative"])
         self.assertEqual(len(filtered.cards), 2)
         self.assertEqual(filtered.hidden, 1)
         self.assertEqual(filtered.inventory, {"creative": 2, "beta": 1})
-        page = deck.render_page(filtered)
+        page = skill_deck.render_page(filtered)
         values = [value for value, _, _ in self.options(page)]
         self.assertEqual(values, ["", "beta", "creative"])
         self.assertIn("All boxes (3)", page)
 
     def test_apply_box_filter_leaves_the_original_alone(self) -> None:
-        data = deck.DeckData(cards=self.cards(), inventory={"creative": 2})
-        deck.apply_box_filter(data, ["beta"])
+        data = skill_deck.DeckData(cards=self.cards(), inventory={"creative": 2})
+        skill_deck.apply_box_filter(data, ["beta"])
         self.assertEqual(len(data.cards), 3)
         self.assertEqual(data.filters, ())
         self.assertEqual(data.hidden, 0)
 
     def test_picker_escapes_box_names(self) -> None:
-        page = deck.render_page(
-            deck.DeckData(cards=[], inventory={"<script>x</script>": 2})
+        page = skill_deck.render_page(
+            skill_deck.DeckData(cards=[], inventory={"<script>x</script>": 2})
         )
         self.assertNotIn("<script>", page)
         self.assertIn("&lt;script&gt;x&lt;/script&gt;", page)
 
     def test_json_advertises_the_full_inventory(self) -> None:
-        data = deck.DeckData(
+        data = skill_deck.DeckData(
             cards=self.cards()[:1], inventory={"creative": 2, "beta": 1}
         )
-        payload = deck.json_payload(deck.apply_box_filter(data, ["creative"]))
+        payload = skill_deck.json_payload(
+            skill_deck.apply_box_filter(data, ["creative"])
+        )
         self.assertEqual(payload["counts"]["inventory"], {"creative": 2, "beta": 1})
         self.assertEqual(payload["counts"]["by_box"], {"creative": 1})
 
     # --- over HTTP ---------------------------------------------------------
 
-    def fake_home_deck(self, tmp: str) -> deck.DeckData:
-        return deck.build_deck(
+    def fake_home_deck(self, tmp: str) -> skill_deck.DeckData:
+        return skill_deck.build_deck(
             PROJECT_ROOT,
             hermes_home=make_hermes_home(Path(tmp)),
             all_profiles=True,
