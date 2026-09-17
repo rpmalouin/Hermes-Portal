@@ -132,6 +132,50 @@ class TestLoader(unittest.TestCase):
         self.assertEqual(skills, [])
         self.assertIn("skills directory not found", stderr.getvalue())
 
+    def test_project_root_gets_a_hint_naming_the_fix(self) -> None:
+        # Runtime(project_root) requests <root>/skills while the real directory
+        # sits one level deeper, inside the package. The warning must name that
+        # fix instead of just reporting an empty registry.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            package_dir = project_root / "pkg"
+            package_skills = package_dir / "skills"
+            (package_skills / "demo").mkdir(parents=True)
+            (package_dir / "__init__.py").write_text("", encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                skills = load_skills(project_root / "skills")
+
+            self.assertEqual(skills, [])
+            warning = stderr.getvalue()
+            self.assertIn("did you pass a project root?", warning)
+            self.assertIn(f"pass {package_dir} instead", warning)
+            self.assertIn(f"skills_dir={package_skills}", warning)
+
+    def test_hint_prefers_a_candidate_that_is_a_python_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            (project_root / "aaa_sibling" / "skills").mkdir(parents=True)
+            package_dir = project_root / "zzz_package"
+            (package_dir / "skills").mkdir(parents=True)
+            (package_dir / "__init__.py").write_text("", encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                load_skills(project_root / "skills")
+
+            warning = stderr.getvalue()
+            self.assertIn(f"skills_dir={package_dir / 'skills'}", warning)
+
+    def test_warning_without_a_candidate_stays_plain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                load_skills(Path(tmp) / "nothing" / "here")
+            self.assertIn("skills directory not found", stderr.getvalue())
+            self.assertNotIn("did you pass a project root?", stderr.getvalue())
+
     def test_bad_skills_are_skipped_not_raised(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -27,20 +27,55 @@ def _warn(manifest_path: Path, message: str) -> None:
     print(f"warning: {manifest_path}: {message}", file=sys.stderr)
 
 
+def _missing_dir_hint(path: Path) -> str:
+    """Explain a missing skills directory and, when possible, name the fix.
+
+    Passing a project root instead of the directory that *contains* ``skills/``
+    is the usual cause: the requested directory is then ``<project>/skills``
+    while the real one is one level deeper.  Look inside *path* and its parent
+    for a ``*/skills`` candidate; a candidate inside a Python package (a sibling
+    of ``__init__.py``) wins.
+    """
+    search_roots = [path, path.parent] if path.parent != path else [path]
+    candidates: set[Path] = set()
+    for search_root in search_roots:
+        if search_root.is_dir():
+            candidates.update(
+                candidate
+                for candidate in search_root.glob("*/skills")
+                if candidate.is_dir()
+            )
+    if not candidates:
+        return "skills directory not found"
+
+    fix = min(
+        candidates,
+        key=lambda candidate: (
+            not (candidate.parent / "__init__.py").is_file(),
+            str(candidate),
+        ),
+    )
+    return (
+        "skills directory not found (did you pass a project root? "
+        f"pass {fix.parent} instead of {path}, or use skills_dir={fix})"
+    )
+
+
 def load_skills(skills_dir: Path) -> list[Skill]:
     """Load every valid skill manifest below *skills_dir*.
 
     Args:
-        skills_dir: Directory whose immediate subdirectories hold skills.
+        skills_dir: Directory whose immediate subdirectories hold skills.  It is
+            a directory of *skill directories*, not a project root.
 
     Returns:
         The successfully loaded skills sorted by directory name.  A missing or
-        unreadable *skills_dir* yields ``[]`` (with a warning), never an
-        exception.
+        unreadable *skills_dir* yields ``[]`` (with a warning naming the likely
+        fix), never an exception.
     """
     root = Path(skills_dir)
     if not root.is_dir():
-        _warn(root, "skills directory not found")
+        _warn(root, _missing_dir_hint(root))
         return []
 
     skills: list[Skill] = []

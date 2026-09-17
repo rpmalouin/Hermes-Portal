@@ -190,9 +190,30 @@ The same rules apply whether you call `Runtime.run()` or type into the shell.
    automatically. Verify with `skills` and
    `run word_count --input "one two three"`.
 
-Projects outside this package work the same way: point the shell at their parent
-directory with `--root`, or embed the framework with
-`Runtime(Path("myproject"))`, which loads `myproject/skills`.
+## Running it from Python
+
+`Runtime(root)` and the shell's `--root` take the directory that **contains**
+`skills/`. For this repository that is `hermes/`, not the project root:
+
+```python
+from pathlib import Path
+
+from hermes.core import Runtime
+
+runtime = Runtime(Path("<project-root>/hermes"))   # loads hermes/skills
+print(runtime.skills.names())                      # ['example_skill']
+
+result = runtime.run("example_skill", input="hello")
+print(result.stdout, end="")                       # the skill's report
+print(result.returncode)                           # 0
+
+# a project whose skills live somewhere else:
+other = Runtime(Path("<some-project>"), skills_dir=Path("<some-project>/skills"))
+```
+
+Mistaking the project root for the skills root is not silent: the loader reports
+the missing directory, names the `skills_dir=` fix in the warning, and returns an
+empty registry instead of raising.
 
 ## Manifest field reference
 
