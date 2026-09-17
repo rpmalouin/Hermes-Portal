@@ -22,6 +22,7 @@ Design notes that are load-bearing:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -194,14 +195,42 @@ class Domain:
     detail_sections: Callable[[str], Sequence[Collection]] = lambda _record_id: ()
 
 
+#: Credential-shaped text that must never reach a page.  Logs, message bodies, job
+#: output and adapter error strings can all contain a pasted key or a bearer header,
+#: so every path that carries free text runs through :func:`scrub` first.
+_SCRUB_RE = re.compile(
+    r"(?i)(sk-[A-Za-z0-9_\-]{6,}"
+    r"|bearer\s+\S+"
+    r"|(api[_-]?key|token|secret|password|passwd)\s*[=:]\s*\S+)"
+)
+
+
+def scrub(text: str) -> str:
+    """Mask credential-shaped substrings before text reaches a page.
+
+    ``sources`` re-exports this so adapters can keep importing it from there; it
+    lives here because :func:`failed_collection` needs it and ``sources`` already
+    imports this module (importing the other way round would be a cycle).
+
+    This masks the shape, not the value: it is a display guard, never a reason to
+    trust a file.
+    """
+    return _SCRUB_RE.sub("<redacted>", text)
+
+
 def failed_collection(key: str, title: str, error: str, as_of: str = "") -> Collection:
-    """Return a zero-count collection that reports an adapter failure."""
+    """Return a zero-count collection that reports an adapter failure.
+
+    The error text is scrubbed on the way in, like every other free-text path: an
+    exception message can carry a connection string, a path or a pasted key, and
+    this collection is rendered on the page.
+    """
     return Collection(
         key=key,
         title=title,
         description="This adapter failed; the portal is still up.",
         count=Count(0, "unavailable -- the adapter raised"),
-        notes=(error,),
+        notes=(scrub(error),),
         as_of=as_of,
     )
 

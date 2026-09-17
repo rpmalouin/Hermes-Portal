@@ -332,6 +332,34 @@ which is now free and stays free) and not 9119 (Hermes' own dashboard). It binds
 localhost only, and `--port 0` picks a free port when something else already holds
 it.
 
+### What it does about being a local server holding secrets
+
+This page shows the agent's memory, its sessions, its vault and its logs, and it has no
+login -- on a loopback socket a login would be theatre. Three things stand in for one:
+
+* **The `Host` header must name a name this portal answers to**: the loopback names,
+  plus whatever `--host` was given. Without that check any page you visit could
+  re-resolve its own hostname to 127.0.0.1 and read everything here same-origin
+  (DNS rebinding). A request with no `Host` at all passes, because browsers always send
+  one -- only non-browser clients omit it, and they are not who rebinding fools.
+* **Every response carries a policy**: `default-src 'none'` with inline script and style
+  allowed (the page is one file), no framing, no referrers, `nosniff`, and a `Server:
+  hermes-portal` header with no version on it.
+* **`--host` says so out loud.** Bound to anything but loopback the portal prints a
+  warning naming what is exposed, drops the `Host` check (the exposure was the
+  operator's call) and *starts logging requests*: on loopback silence is right, off it
+  an access log is the least a thing holding the agent's memory should leave behind.
+
+One piece of containment worth knowing: **the tree-walking readers refuse a symlink that
+leaves the tree.** A link inside the vault (or the log directory) pointing outside is
+skipped and reported on the page, while a link that stays inside is followed -- because
+one of the trees the portal reads, a profile's `skills/`, is itself made of symlinks.
+
+The posture behind those has been attacked rather than asserted: path traversal against
+a control id that is *proven* to resolve, script tags in every field that reaches a page,
+SQL and FTS injection attempts, oversize bodies, wrong media types, hostile `Host`
+headers, and a symlink carrying a canary out of the vault.
+
 Eight domains, each with collections, drill-down and search:
 
 | Domain | Source | Reads | Headline |

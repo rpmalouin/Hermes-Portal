@@ -37,7 +37,11 @@ from hermes.portal.domains import health as health_domain  # noqa: E402
 from hermes.portal.domains import logs as logs_domain  # noqa: E402
 from hermes.portal.domains import sessions as sessions_domain  # noqa: E402
 from hermes.portal.domains import usage as usage_domain  # noqa: E402
-from hermes.portal.model import Domain, count_map  # noqa: E402
+from hermes.portal.model import (  # noqa: E402
+    Domain,
+    count_map,
+    failed_collection,  # noqa: E402
+)
 
 FAKE_KEY = "sk-ABCDEF1234567890"
 FAKE_BEARER = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6"
@@ -814,3 +818,35 @@ class CronPrimitivesTestCase(BaseP1):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class FailureAndSignatureTestCase(BaseP1):
+    """The two things no test named: scrubbed adapter failures, and the signature
+    grouping that the code graph listed as the one method nothing called."""
+
+    def test_a_failed_collection_is_scrubbed(self) -> None:
+        """Adapter errors reach the page, so they go through the same guard as logs."""
+        collection = failed_collection(
+            "logs", "Logs", "connect failed: api_key=abcdef123456", as_of="STAMP"
+        )
+        note = collection.notes[0]
+        self.assertIn("<redacted>", note)
+        self.assertNotIn("abcdef123456", note)
+        self.assertIn("connect failed", note)
+        self.assertEqual(collection.count.value, 0)
+
+    def test_the_signature_collection_groups_by_shape(self) -> None:
+        library = self.root / "library-logs"
+        library.mkdir(exist_ok=True)
+        with mock.patch.object(logs_domain, "LIBRARY_LOGS", library):
+            domain = logs_domain.LogsDomain(hermes_home_override=self.root)
+            scans = domain._scans()
+            collection = domain._signatures_collection(scans)
+        self.assertEqual(collection.key, "signatures")
+        self.assertTrue(collection.records)
+        self.assertTrue(all(record.title for record in collection.records))
+        # the count is the size of the set the label describes, truncated or not
+        if collection.truncated:
+            self.assertGreaterEqual(collection.count.value, len(collection.records))
+        if not collection.truncated:
+            self.assertEqual(collection.count.value, len(collection.records))

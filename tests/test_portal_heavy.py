@@ -317,7 +317,7 @@ class VaultTestCase(unittest.TestCase):
         """Map of collection key -> collection for the fixture vault."""
         return {c.key: c for c in self.registry.safe_collections(self.domain)}
 
-    def test_index_skips_dot_directories(self) -> None:
+    def test_index_skips_the_junk_directories_it_names(self) -> None:
         overview = self.registry.safe_overview(self.domain)
         # five real notes: the two under .obsidian/ and .trash/ are not notes
         self.assertEqual(overview.count.value, 5)
@@ -791,3 +791,59 @@ class VaultPrimitivesTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VaultLinkTestCase(unittest.TestCase):
+    """The vault's containment boundary: a note is a file *in* the vault.
+
+    Before this, a symlink inside the vault pointing outside it was indexed and its
+    body served -- the portal read whatever a link reached, not what the vault holds.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.workspace = Path(self._tmp.name)
+        self.root = make_vault(self.workspace / "vault")
+
+    def test_a_link_out_of_the_vault_is_not_a_note(self) -> None:
+        outside = self.workspace / "outside-the-vault.md"
+        outside.write_text(
+            "---\ntags: [secret]\n---\n# Outside\n\nTOPSECRET-CANARY\n",
+            encoding="utf-8",
+        )
+        link = self.root / "linked.md"
+        link.symlink_to(outside)
+
+        index = vault_domain.VaultDomain(vault=self.root).snapshot()
+
+        self.assertNotIn("linked.md", index.notes)
+        bodies = "\n".join(
+            str(getattr(note, "body", "")) for note in index.notes.values()
+        )
+        self.assertNotIn("TOPSECRET-CANARY", bodies)
+        self.assertIn("skipped a link out of the vault", "\n".join(index.errors))
+
+    def test_a_link_that_stays_inside_the_vault_is_still_a_note(self) -> None:
+        """Some trees the portal reads are made of links; only leaving is refused."""
+        target = next(
+            path
+            for path in sorted(self.root.rglob("*.md"))
+            if "Kanban" not in path.name
+        )
+        link = self.root / "alias.md"
+        link.symlink_to(target)
+
+        index = vault_domain.VaultDomain(vault=self.root).snapshot()
+
+        self.assertIn("alias.md", index.notes)
+
+    def test_the_vault_records_what_it_skipped(self) -> None:
+        """A skipped link is data on the page, not a silent omission."""
+        outside = self.workspace / "elsewhere.md"
+        outside.write_text("x", encoding="utf-8")
+        (self.root / "escape-hatch.md").symlink_to(outside)
+
+        index = vault_domain.VaultDomain(vault=self.root).snapshot()
+
+        self.assertTrue(any("escape-hatch" in error for error in index.errors))

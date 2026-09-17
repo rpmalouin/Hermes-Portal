@@ -29,6 +29,7 @@ from ..sources import (
     as_of,
     fmt_ago,
     human_size,
+    inside_tree,
     path_source,
     snippet,
     truncate,
@@ -152,9 +153,17 @@ def build_index(vault: Path | None = None) -> VaultIndex:
         return index
 
     errors: list[str] = []
+    root_real = root.resolve()
     for path in sorted(root.rglob("*.md")):
         parts = set(path.relative_to(root).parts[:-1])
         if parts & SKIPPED_DIRS:
+            continue
+        # a note is a file *in the vault*.  A symlink -- a file, or a directory
+        # full of them -- pointing outside is not a note, it is a way out of the
+        # tree, and the vault's contents are the thing being served, not whatever
+        # a link happens to reach.  Links that stay inside are kept.
+        if not inside_tree(path, root_real):
+            errors.append(f"skipped a link out of the vault: {path.name}")
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")

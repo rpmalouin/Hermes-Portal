@@ -74,8 +74,9 @@ class Skill:
             A validated :class:`Skill`.
 
         Raises:
-            ValueError: A required field is missing, or a field has the wrong
-                type (including unsupported ``args`` values).
+            ValueError: A required field is missing, a field has the wrong type
+                (including unsupported ``args`` values), or ``name``/``entrypoint``
+                would take the executor outside the skill's own directory.
         """
         if not isinstance(data, Mapping):
             raise ValueError(
@@ -99,6 +100,30 @@ class Skill:
                 isinstance(item, str) for item in value
             ):
                 raise ValueError(f"field {field_name!r} must be a list of strings")
+
+        # The executor resolves the entrypoint as ``<skills_dir>/<name>/<entrypoint>``,
+        # so both fields are used as path segments.  A name like ``../..`` or an
+        # absolute entrypoint would aim the executor outside the skills tree, so they
+        # are rejected here: the loader turns a ValueError into a warning and skips
+        # the skill, which is exactly what should happen to one that cannot be run
+        # from where it lives.
+        name = data["name"]
+        if name in {"", ".", ".."} or "/" in name or "\\" in name or "\0" in name:
+            raise ValueError(
+                f"field 'name' must be a single directory name, got {name!r}"
+            )
+        entrypoint = data["entrypoint"]
+        if (
+            not entrypoint
+            or entrypoint.startswith(("/", "\\"))
+            or "\\" in entrypoint
+            or ":" in entrypoint
+            or ".." in entrypoint.split("/")
+        ):
+            raise ValueError(
+                "field 'entrypoint' must be a relative path inside the skill's own "
+                f"directory, got {entrypoint!r}"
+            )
 
         args = data["args"]
         if not isinstance(args, Mapping):

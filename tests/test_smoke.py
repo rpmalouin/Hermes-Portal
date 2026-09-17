@@ -495,3 +495,78 @@ class TestShell(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class PathSafetyTestCase(unittest.TestCase):
+    """A manifest cannot aim the executor outside the skills tree.
+
+    ``run_skill`` resolves ``<skills_root> / <name> / <entrypoint>``, so both
+    manifest fields are used as path segments -- and the loader's rule that "a skill
+    must live in a directory named after it" is only true if something enforces it.
+    """
+
+    def test_a_name_that_is_not_a_single_directory_is_rejected(self) -> None:
+        for name in ("../evil", "a/b", "..", ".", "", "back\\slash", "nul\0byte"):
+            with (
+                self.subTest(name=name),
+                self.assertRaises(ValueError),
+            ):
+                Skill.from_dict(valid_manifest(name))
+
+    def test_an_entrypoint_that_leaves_the_skill_is_rejected(self) -> None:
+        for entrypoint in (
+            "/etc/passwd",
+            "../main.py",
+            "sub/../../main.py",
+            "a\\b.py",
+            "C:/main.py",
+            "",
+        ):
+            with (
+                self.subTest(entrypoint=entrypoint),
+                self.assertRaises(ValueError),
+            ):
+                Skill.from_dict(valid_manifest("demo", entrypoint=entrypoint))
+
+    def test_an_entrypoint_in_a_subdirectory_is_allowed(self) -> None:
+        """Refusing everything would be easy and wrong: nesting is legitimate."""
+        skill = Skill.from_dict(valid_manifest("demo", entrypoint="sub/main.py"))
+        self.assertEqual(skill.entrypoint, "sub/main.py")
+
+    def test_the_executor_refuses_to_run_outside_the_skill_directory(self) -> None:
+        """Even a Skill built by hand -- bypassing from_dict -- cannot escape."""
+        with tempfile.TemporaryDirectory() as tmp:
+            skills = Path(tmp) / "skills"
+            (skills / "evil").mkdir(parents=True)
+            escaped = Path(tmp) / "escaped.py"
+            escaped.write_text(
+                "import pathlib\n"
+                "pathlib.Path(__file__).with_name('RAN.txt').write_text('ran')\n",
+                encoding="utf-8",
+            )
+            hand_built = Skill(
+                name="..",
+                title="escape",
+                description="",
+                primary_box="",
+                raw_category="",
+                tags=[],
+                entrypoint="escaped.py",
+                args={},
+                related=[],
+            )
+            result = run_skill(hand_built, skills)
+            self.assertEqual(result.returncode, 127)
+            self.assertFalse((Path(tmp) / "RAN.txt").exists())
+
+    def test_a_skill_printing_invalid_utf8_does_not_crash_the_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            skills = Path(tmp) / "skills"
+            write_manifest(skills, "noisy", valid_manifest("noisy"))
+            (skills / "noisy" / "main.py").write_bytes(
+                b"import sys\nsys.stdout.buffer.write(b'bad \\xff byte\\n')\n"
+            )
+            result = run_skill(Skill.from_dict(valid_manifest("noisy")), skills)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("bad", result.stdout)
+        self.assertIn("\ufffd", result.stdout)

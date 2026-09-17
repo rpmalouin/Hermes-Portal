@@ -17,7 +17,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import threading
@@ -26,7 +25,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from .model import Source
+from .model import Source, scrub  # noqa: F401 - re-exported, adapters import it here
 
 
 def hermes_home() -> Path:
@@ -215,22 +214,19 @@ class Cache:
             return value, stamp
 
 
-_SCRUB_RE = re.compile(
-    r"(?i)(sk-[A-Za-z0-9_\-]{6,}"
-    r"|bearer\s+\S+"
-    r"|(api[_-]?key|token|secret|password|passwd)\s*[=:]\s*\S+)"
-)
+def inside_tree(path: Path, root: Path) -> bool:
+    """Return ``True`` when *path*, resolved, still lives under *root*.
 
-
-def scrub(text: str) -> str:
-    """Mask credential-shaped substrings before text reaches a page.
-
-    Logs, message bodies and job output can all contain a pasted key or a bearer
-    header.  The portal renders its sources verbatim, so every path that carries
-    free text runs it through here first.  This masks the shape, not the value: it
-    is a display guard, never a reason to trust a file.
+    The tree-walking readers use this to refuse a way out of the tree they were
+    pointed at: a symlink -- a file, or a directory full of them -- is otherwise a
+    door out of the vault (or the log directory) and into whatever it points at.
+    A link that stays inside the tree is fine, which matters here because one of
+    the trees the portal reads (a profile's ``skills/``) is made of symlinks.
     """
-    return _SCRUB_RE.sub("<redacted>", text)
+    try:
+        return Path(path).resolve().is_relative_to(Path(root).resolve())
+    except (OSError, RuntimeError):  # a vanished parent, a permission wall, a loop
+        return False
 
 
 def age_seconds(timestamp: float | str | None) -> float | None:
@@ -259,7 +255,12 @@ def run_argv(argv: Sequence[str], timeout: float = 15.0) -> tuple[str, str]:
     """
     try:
         completed = subprocess.run(
-            list(argv), capture_output=True, text=True, timeout=timeout, check=False
+            list(argv),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "", f"{' '.join(argv)} failed: {type(exc).__name__}: {exc}"
@@ -300,6 +301,8 @@ def glob_files(root: Path, patterns: Sequence[str]) -> list[Path]:
     found: list[Path] = []
     for pattern in patterns:
         found.extend(path for path in Path(root).glob(pattern) if path.is_file())
+    # a log file outside the log tree (a link into /var/log, say) is not one of ours
+    found = [path for path in found if inside_tree(path, root)]
     unique = {path.resolve(): path for path in found}
     return sorted(unique.values(), key=lambda path: -path.stat().st_size)
 
@@ -307,7 +310,9 @@ def glob_files(root: Path, patterns: Sequence[str]) -> list[Path]:
 def read_json(path: Path) -> tuple[Any | None, str]:
     """Read and decode a JSON file, returning ``(data, "")`` or ``(None, error)``."""
     try:
-        raw = Path(path).read_text(encoding="utf-8")
+        # errors="replace" like every other read: a manifest with one bad byte
+        # should cost that file's value, not the whole collection's
+        raw = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return None, f"cannot read {path}: {exc}"
     try:

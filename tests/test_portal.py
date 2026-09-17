@@ -21,6 +21,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
@@ -981,9 +982,16 @@ class TestRender(unittest.TestCase):
 @contextmanager
 def run_portal(root: Path) -> Iterator[str]:
     """Serve the portal for *root* on an ephemeral port, yielding its base URL."""
-    saved = (server.PortalHandler.registry, server.PortalHandler.built_at)
+    saved = (
+        server.PortalHandler.registry,
+        server.PortalHandler.built_at,
+        server.PortalHandler.hosts,
+    )
     server.PortalHandler.registry = server.default_registry(hermes_home=root)
     server.PortalHandler.built_at = "STAMP"
+    # the Host policy serve() applies for a loopback bind, so these tests run
+    # against the configuration the portal actually ships with
+    server.PortalHandler.hosts = server.allowed_hosts("127.0.0.1")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.PortalHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -1004,7 +1012,11 @@ def run_portal(root: Path) -> Iterator[str]:
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
-        server.PortalHandler.registry, server.PortalHandler.built_at = saved
+        (
+            server.PortalHandler.registry,
+            server.PortalHandler.built_at,
+            server.PortalHandler.hosts,
+        ) = saved
 
 
 def fetch(url: str) -> tuple[int, str, str]:
@@ -1116,15 +1128,14 @@ class TestServer(unittest.TestCase):
 
     def test_only_the_favourites_route_accepts_a_post(self) -> None:
         """Every other path refuses to be written, with a reason in the body."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = make_hermes_root(Path(tmp))
-            with run_portal(root) as base:
-                request = urllib.request.Request(
-                    f"{base}/skills", data=b"x", method="POST"
-                )
-                with self.assertRaises(urllib.error.HTTPError) as caught:
-                    urllib.request.urlopen(request, timeout=10)
-                body = json.loads(caught.exception.read().decode())
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            request = urllib.request.Request(f"{base}/skills", data=b"x", method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=10)
+            body = json.loads(caught.exception.read().decode())
         self.assertEqual(caught.exception.code, 404)
         self.assertIn("no POST route", body["error"])
 
@@ -1277,3 +1288,126 @@ class TestSkillsGallery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class HostAndHeaderTestCase(unittest.TestCase):
+    """The request-level defences: whose name the portal answers to, and its headers.
+
+    DNS rebinding is the threat these exist for.  A loopback-bound server answers to
+    any name that resolves to 127.0.0.1, so a page the user visits can re-resolve its
+    own hostname to loopback and read the agent's memory, sessions and vault
+    same-origin -- the Host check is what stands in the way.
+    """
+
+    def test_a_host_that_is_not_ours_is_refused(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            self.assertEqual(fetch(f"{base}/index.json")[0], 200)
+            for hostile in (
+                "evil.example",
+                "evil.example:8087",
+                "localhost.evil.example",
+            ):
+                with self.subTest(host=hostile):
+                    request = urllib.request.Request(
+                        f"{base}/index.json", headers={"Host": hostile}
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(request, timeout=10)
+                    self.assertEqual(caught.exception.code, 421)
+
+    def test_the_names_this_machine_answers_to_pass_the_check(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            port = urllib.parse.urlsplit(base).port
+            for name in ("127.0.0.1", "localhost", "::1"):
+                with self.subTest(host=name):
+                    request = urllib.request.Request(
+                        f"{base}/index.json", headers={"Host": f"{name}:{port}"}
+                    )
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        self.assertEqual(response.status, 200)
+
+    def test_the_host_check_stays_out_of_the_way_when_exposed_on_purpose(self) -> None:
+        """Bound to a named interface, exposure was the operator's call, not a hole."""
+        self.assertEqual(server.allowed_hosts("0.0.0.0"), ())
+        self.assertEqual(server.allowed_hosts("192.168.1.10"), ())
+        self.assertEqual(
+            server.allowed_hosts("127.0.0.1"),
+            ("127.0.0.1", "::1", "localhost"),
+        )
+
+    def test_every_response_carries_the_security_headers(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+            urllib.request.urlopen(f"{base}/", timeout=10) as response,
+        ):
+            headers = response.headers
+            self.assertEqual(response.status, 200)
+        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(headers.get("Referrer-Policy"), "no-referrer")
+        policy = headers.get("Content-Security-Policy", "")
+        self.assertIn("default-src 'none'", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
+        # no Python version on offer
+        self.assertEqual(headers.get("Server").strip(), "hermes-portal")
+
+    def test_the_json_routes_carry_them_too(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+            urllib.request.urlopen(f"{base}/index.json", timeout=10) as resp,
+        ):
+            nosniff = resp.headers.get("X-Content-Type-Options")
+            self.assertEqual(nosniff, "nosniff")
+
+
+class SourceSafetyTestCase(unittest.TestCase):
+    """Reads that must not fail, and paths that must not leave their tree."""
+
+    def test_read_json_survives_a_bad_byte(self) -> None:
+        """One invalid byte costs that value, not the whole read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "manifest.json"
+            path.write_bytes(b'{"name": "x\xffy", "n": 1}')
+            data, error = sources.read_json(path)
+        self.assertEqual(error, "")
+        self.assertEqual(data["n"], 1)
+        self.assertEqual(data["name"], "x\ufffdy")
+
+    def test_inside_tree_rejects_a_link_out_of_the_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / "tree"
+            tree.mkdir()
+            inside = tree / "in.md"
+            inside.write_text("x", encoding="utf-8")
+            outside = Path(tmp) / "outside.md"
+            outside.write_text("x", encoding="utf-8")
+            link = tree / "link.md"
+            link.symlink_to(outside)
+            nested = tree / "sub"
+            nested.mkdir()
+            deep = nested / "deep.md"
+            deep.write_text("x", encoding="utf-8")
+            # the asserts stay inside the context: resolving follows a link only
+            # while the link is there, and this is a check on existing paths
+            self.assertTrue(sources.inside_tree(inside, tree))
+            self.assertTrue(sources.inside_tree(deep, tree))
+            self.assertFalse(sources.inside_tree(link, tree))
+            self.assertFalse(sources.inside_tree(outside, tree))
+
+    def test_a_directory_of_links_out_is_not_inside_either(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / "tree"
+            tree.mkdir()
+            elsewhere = Path(tmp) / "elsewhere"
+            elsewhere.mkdir()
+            (elsewhere / "note.md").write_text("x", encoding="utf-8")
+            (tree / "shortcut").symlink_to(elsewhere, target_is_directory=True)
+            self.assertFalse(sources.inside_tree(tree / "shortcut" / "note.md", tree))

@@ -55,6 +55,41 @@ FILTER_KEYS = ("box", "folder", "kind", "model", "provider", "profile")
 MAX_BODY_BYTES = 8192
 JSON_TYPES = ("application/json", "")
 
+#: Names that mean "this machine".  Binding to one of these does *not* mean only this
+#: machine can reach the server: any name that resolves to 127.0.0.1 reaches it, which
+#: is how a page the user visits can end up same-origin with the portal (DNS rebinding).
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+#: Sent with every response.  The portal renders untrusted text -- vault notes, log
+#: lines, session messages -- and uses its own inline script and styles, so the policy
+#: allows exactly those and nothing else: no external loads, no framing, no referrers.
+SECURITY_HEADERS = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+    ("X-Frame-Options", "DENY"),
+    (
+        "Content-Security-Policy",
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "img-src data:; connect-src 'self'; form-action 'self'; base-uri 'none'; "
+        "frame-ancestors 'none'",
+    ),
+)
+
+
+def allowed_hosts(host: str) -> tuple[str, ...]:
+    """The names this server answers to, or ``()`` when it is exposed on purpose.
+
+    A loopback-bound portal answers to *any* name that resolves to loopback, so a page
+    the user visits can re-resolve its own hostname to 127.0.0.1 and read the agent's
+    memory, sessions and vault same-origin.  Checking ``Host`` against the names we
+    were bound for closes that.  When the operator names any other interface they have
+    already chosen to expose the portal: nothing is imposed, but the banner says so and
+    requests are logged.
+    """
+    if host not in LOOPBACK_HOSTS:
+        return ()
+    return tuple(sorted({*LOOPBACK_HOSTS, host}))
+
 
 def jsonable(value: Any) -> Any:
     """Convert portal dataclasses into JSON-serialisable values."""
@@ -187,9 +222,48 @@ class PortalHandler(BaseHTTPRequestHandler):
     state: PortalState | None = None
     built_at: str = ""
     render_limit: int = 20
+    #: Names this server answers to; empty means no check (bound where the operator
+    #: asked, so exposure was their call).  Set by :func:`serve`.
+    hosts: tuple[str, ...] = ()
+    #: Quiet on loopback, where every request is the user's own; requests are logged
+    #: when the portal was bound to a named interface, because then they are not.
+    quiet: bool = True
+    # no Python version in the Server header
+    server_version = "hermes-portal"
+    sys_version = ""
+
+    def _host_ok(self) -> bool:
+        """True when the request's ``Host`` names a name this portal was bound for.
+
+        A request with no ``Host`` at all passes: browsers always send one, so an
+        absent header means a non-browser client, which is not what rebinding fools.
+        """
+        if not self.hosts:
+            return True
+        raw = (self.headers.get("Host") or "").strip()
+        if not raw:
+            return True
+        name = raw
+        if name.startswith("["):  # an IPv6 literal: [::1]:8087
+            name = name.split("]", 1)[0].lstrip("[")
+        elif ":" in name:
+            name = name.rsplit(":", 1)[0]
+        if name.lower() in self.hosts:
+            return True
+        self._send(
+            421,
+            "text/plain; charset=utf-8",
+            (
+                f"misdirected request: Host {raw!r} is not a name this portal answers "
+                "to. Start it with --host <name> if it should.\n"
+            ).encode(),
+        )
+        return False
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         """Route one GET request."""
+        if not self._host_ok():
+            return
         registry = self.registry
         if registry is None:
             self.send_error(500, "Portal registry not configured")
@@ -294,10 +368,12 @@ class PortalHandler(BaseHTTPRequestHandler):
         )
 
     def _send(self, status: int, content_type: str, body: bytes) -> None:
-        """Send one response."""
+        """Send one response, with the headers every response carries."""
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for header, value in SECURITY_HEADERS:
+            self.send_header(header, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -338,6 +414,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         then size, then body, then the record itself -- so a bad request never
         reaches the filesystem and the response says which check failed.
         """
+        if not self._host_ok():
+            return
         registry = self.registry
         if registry is None:
             self._send_json(
@@ -453,9 +531,16 @@ class PortalHandler(BaseHTTPRequestHandler):
             render.render_not_found(domains, self.built_at, what).encode("utf-8"),
         )
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002, ARG002
-        """Quiet default request logging; comment out to re-enable."""
-        return
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        """Quiet on loopback; logged when the portal was deliberately exposed.
+
+        The stdlib calls this for every request, including errors.  Silence is right
+        when the only caller is the user on the same machine; if the portal was bound
+        to a named interface, an access log is the least it should leave behind.
+        """
+        if self.quiet:
+            return
+        super().log_message(format, *args)
 
 
 def write_policy(state: PortalState | None) -> str:
@@ -514,6 +599,8 @@ def serve(
     PortalHandler.registry = registry
     PortalHandler.state = state if not no_state else None
     PortalHandler.built_at = built_at
+    PortalHandler.hosts = allowed_hosts(host)
+    PortalHandler.quiet = bool(PortalHandler.hosts)
 
     server = ThreadingHTTPServer((host, port), PortalHandler)
     bound_host, bound_port = server.server_address[:2]
@@ -522,6 +609,12 @@ def serve(
         f"Hermes Portal running at http://{bound_host}:{bound_port}  (built {built_at})"
     )
     print(write_policy(PortalHandler.state))
+    if not PortalHandler.hosts:
+        print(
+            f"WARNING: bound to {host}, which is not loopback. This portal has no "
+            "authentication: anyone who can reach this address can read the agent's "
+            "memory, sessions, vault and logs. Requests will be logged."
+        )
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
