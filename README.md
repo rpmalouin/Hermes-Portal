@@ -26,9 +26,22 @@ hermes/
   web/
     __init__.py
     skill_deck.py    Skill Deck web UI: this project + the running Hermes agent
+  portal/            read-only drill-down over everything Hermes keeps
+    __init__.py
+    model.py         Domain / Collection / Record / Count (counts carry rules)
+    sources.py       read-only SQLite, root resolution, formatting
+    render.py        one generic page shape for every domain
+    server.py        routes, JSON endpoints, handler
+    __main__.py      python -m hermes.portal
+    domains/         one adapter per domain
+      __init__.py    default_registry()
+      skills.py      4 roots, frontmatter, references
+      sessions.py    state.db sessions, messages, per-model usage
+      cron.py        jobs.json, executions.db, output reports
 tests/
   __init__.py
   test_smoke.py      98 tests, unittest only
+  test_portal.py     51 tests, hermetic fake Hermes root
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -351,11 +364,59 @@ The response also lists every source it scanned with its count, and marks a
 source `MISSING` when the directory is absent, so an empty or short deck is
 self-explaining.
 
+## Hermes Portal
+
+A second web view, and the start of the system around everything Hermes keeps. It
+is **read-only**: every adapter opens its source read-only, and there is no POST
+route, so a client trying to change something gets the standard library's 501.
+
+```sh
+python3 -m hermes.portal                 # http://127.0.0.1:8087
+.venv/bin/hermes-portal --port 8087      # installed console script
+python3 -m hermes.portal --list          # registry summary, no server
+```
+
+P0 ships three domains, each with collections, drill-down and search:
+
+| Domain | Source | Reads | Count shown as |
+| --- | --- | --- | --- |
+| skills | 4 skill roots (shared + 3 profiles) | `SKILL.md` trees, frontmatter, `references/` | 157 unique names — plus 421 files, 55 boxes, 4 roots alongside |
+| sessions | `state.db` | `sessions`, `messages`, `session_model_usage` | 91 sessions — plus 9,504 messages, 4 providers |
+| cron | `cron/jobs.json`, `cron/executions.db`, `cron/output/` | jobs, runs, incidents, reports | 10 jobs — plus 1,000 executions |
+
+Routes: `/` index, `/<domain>` collections, `/<domain>/<id>` a record and the
+collections behind it (a session's messages, a cron job's runs and reports), and
+`/search?q=...` across domains. `?box=`, `?model=` and `?provider=` narrow a
+domain, and every `.json` variant returns the same data — `/index.json`,
+`/skills.json`, `/skills/python-project-scaffolding.json`, `/search.json?q=...`.
+
+### The rules the portal runs on
+
+* **A count is never a bare integer.** Every collection publishes its definition
+  next to the number, and competing counts appear side by side: the skills domain
+  shows 157 unique names *and* 421 files *and* 55 boxes, because each answers a
+  different question. Where a page shows a capped list it says "showing N of M".
+* **Every collection names its sources and read time**, and a missing source is
+  marked `MISSING` rather than silently empty. Adapter failures become notes on
+  the page — one broken domain cannot take the portal down.
+* **The portal never writes.** SQLite is opened `mode=ro` with `query_only`, no
+  files are created and no POST is served. A test hashes the whole fake Hermes
+  tree before and after exercising every route and fails on any difference.
+* **Per-profile stores are disclosed, not merged.** Profiles keep their own
+  `state.db` and `cron/executions.db`; the sessions page says so (2 sessions in
+  the running profile, 6 in another) instead of quietly reading one of them.
+
+Domains and views are separate: `hermes/portal/domains/<domain>.py` is one adapter
+(Domain -> Collection -> Record), `hermes/portal/render.py` is one generic page
+shape over that vocabulary, and a new domain is a new module plus a line in
+`default_registry()`. P1 adds usage/health/logs; P2 the vault and the code graph
+through its own MCP tools.
+
 ## Tests and checks
 
 ```sh
 cd <project-root>
-python3 -m unittest discover -s tests -t .   # 98 tests, ~5.0s
+python3 -m unittest discover -s tests -t .   # 149 tests, ~6.0s
 python3 -m unittest tests.test_smoke         # same suite
 python3 tests/test_smoke.py                  # works directly too
 

@@ -27,10 +27,18 @@ dependencies = []
 [project.scripts]
 hermes = "hermes.cli.shell:main"
 hermes-deck = "hermes.web.skill_deck:main"
+hermes-portal = "hermes.portal.server:main"
 
 [tool.setuptools]
 # Flat layout: the package lives at the project root exactly as specified.
-packages = ["hermes", "hermes.core", "hermes.cli", "hermes.web"]
+packages = [
+  "hermes",
+  "hermes.core",
+  "hermes.cli",
+  "hermes.web",
+  "hermes.portal",
+  "hermes.portal.domains",
+]
 
 [tool.setuptools.package-data]
 # skill directories and profiles are data, not importable packages, so they
