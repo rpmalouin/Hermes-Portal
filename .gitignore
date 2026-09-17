@@ -33,3 +33,5 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+# Added by code-review-graph
+.code-review-graph/
