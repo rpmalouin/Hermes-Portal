@@ -23,9 +23,12 @@ hermes/
   cli/
     __init__.py
     shell.py         interactive `hermes>` REPL
+  web/
+    __init__.py
+    deck.py          Skill Deck web UI: this project + the running Hermes agent
 tests/
   __init__.py
-  test_smoke.py      40 tests, unittest only
+  test_smoke.py      67 tests, unittest only
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -248,11 +251,55 @@ A profile is a small JSON document describing how to start the framework:
 `"skills_dir": "skills"` to `hermes/skills`, and passes the profile timeout to
 every skill it runs.
 
+## Web Skill Deck
+
+```sh
+python3 -m hermes.web.deck            # this project + the running Hermes agent
+python3 -m hermes.web.deck --list     # print what would be shown, then exit
+.venv/bin/hermes-deck --port 9000     # installed console script, any directory
+```
+
+`/` renders the card grid, `/skills.json` returns the same cards as JSON so a
+script can check the load instead of counting `<div>`s. Flags: `--root`,
+`--hermes-home`, `--profile`, `--all-profiles`, `--no-framework`, `--list`,
+`--host`, `--port`.
+
+Which skills appear:
+
+| Source | Read from | Count on the machine this was built on |
+| --- | --- | --- |
+| framework | `<root>/skills/*/skill.json` | 1 (`example_skill`) |
+| hermes | `$HERMES_HOME/skills/**/SKILL.md` | 152 — the running profile's whole set |
+| extra profiles | `$HERMES_HOME/profiles/*/skills`, with `--all-profiles` | +1 further unique name |
+
+Hermes sets `$HERMES_HOME` itself: in a live session it points at the running
+profile directory, whose `skills/` directory *is* the skill set the agent has.
+With no such variable the deck falls back to `~/.hermes`. `--all-profiles` also
+finds that directory's siblings whether `$HERMES_HOME` is a hermes root or a
+single profile.
+
+Three details decide whether the count is right:
+
+* **Symlinks are followed** (`os.walk(followlinks=True)`). Skills symlinked in
+  from another checkout are invisible to `Path.rglob`; the deck finds them.
+* **Cards are de-duplicated** by frontmatter `name` and by real path. The same
+  skill is reachable through several profiles: walking everything unreconciled
+  yields hundreds of paths for ~150 names.
+* **Only top-level frontmatter scalars are read** (`name`, `description`, title
+  from the first `#` heading). Nested blocks such as `metadata:` are ignored
+  rather than guessed at, and every interpolated value is HTML-escaped before
+  any markup is added, so a skill description containing `<`, `&` or backticks
+  renders as text.
+
+The response also lists every source it scanned with its count, and marks a
+source `MISSING` when the directory is absent, so an empty or short deck is
+self-explaining.
+
 ## Tests and checks
 
 ```sh
 cd <project-root>
-python3 -m unittest discover -s tests -t .   # 40 tests, ~1.2s
+python3 -m unittest discover -s tests -t .   # 67 tests, ~1.9s
 python3 -m unittest tests.test_smoke         # same suite
 python3 tests/test_smoke.py                  # works directly too
 

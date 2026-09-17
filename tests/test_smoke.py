@@ -13,11 +13,17 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from contextlib import redirect_stderr
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -29,11 +35,66 @@ from hermes.core.loader import load_skills  # noqa: E402
 from hermes.core.models import Skill, SkillResult  # noqa: E402
 from hermes.core.registry import SkillRegistry  # noqa: E402
 from hermes.core.runtime import Runtime, load_profile  # noqa: E402
+from hermes.web import deck  # noqa: E402
 
 PACKAGE_DIR = PROJECT_ROOT / "hermes"
 SKILLS_DIR = PACKAGE_DIR / "skills"
 EXAMPLE_SKILLS_DIR = SKILLS_DIR
 DEFAULT_PROFILE = PACKAGE_DIR / "profiles" / "default.json"
+
+
+def write_skill_dir(
+    parent: Path,
+    name: str,
+    *,
+    title: str | None = "Test Skill",
+    description: str = "A test skill.",
+    frontmatter_name: str | None = None,
+    with_frontmatter: bool = True,
+) -> Path:
+    """Write a SKILL.md skill directory under *parent* and return it.
+
+    ``title=None`` omits the ``# heading`` so the name-fallback path can be
+    exercised.
+    """
+    skill_dir = parent / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    manifest_name = frontmatter_name if frontmatter_name is not None else name
+    body = f"# {title}\n\nBody text.\n" if title else "Body text.\n"
+    text = (
+        f"---\nname: {manifest_name}\ndescription: {description}\n---\n\n{body}"
+        if with_frontmatter
+        else body
+    )
+    (skill_dir / "SKILL.md").write_text(text, encoding="utf-8")
+    return skill_dir
+
+
+def make_hermes_home(root: Path) -> Path:
+    """Build a fake Hermes home with the shapes that matter and return it.
+
+    Reproduces the three traps the real tree has: a top-level skill, a nested
+    category skill, a skill reachable only through a directory symlink, a
+    second profile, a hidden profile directory, and a SKILL.md nested *inside*
+    a skill directory (which must not register as a skill).
+    """
+    home = root / "hermes-home"
+    write_skill_dir(home / "skills", "standalone", title="Standalone")
+    write_skill_dir(home / "skills" / "creative", "ascii-art", title="Ascii Art")
+    write_skill_dir(home / "profiles" / "other" / "skills", "beta", title="Beta")
+    (home / "profiles" / ".deleted" / "skills").mkdir(parents=True, exist_ok=True)
+
+    outside = root / "outside"
+    write_skill_dir(outside, "linked", title="Linked")
+    (home / "skills").mkdir(parents=True, exist_ok=True)
+    (home / "skills" / "linked-skill").symlink_to(
+        outside / "linked", target_is_directory=True
+    )
+
+    nested = home / "skills" / "standalone" / "references"
+    nested.mkdir(parents=True, exist_ok=True)
+    (nested / "SKILL.md").write_text("---\nname: bogus\n---\n", encoding="utf-8")
+    return home
 
 
 def valid_manifest(name: str, **overrides: object) -> dict:
@@ -487,5 +548,293 @@ class TestShell(unittest.TestCase):
         self.assertIn("HI", printed)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+class TestDeckFrontmatter(unittest.TestCase):
+    """SKILL.md frontmatter parsing: a documented subset, never a crash."""
+
+    def test_simple_scalars(self) -> None:
+        fields, body = deck.split_frontmatter(
+            "---\nname: ascii-art\ndescription: Draw with characters.\n---\n\n# Title\n"
+        )
+        self.assertEqual(fields["name"], "ascii-art")
+        self.assertEqual(fields["description"], "Draw with characters.")
+        self.assertIn("# Title", body)
+
+    def test_quoted_values_are_unquoted(self) -> None:
+        fields = deck.parse_frontmatter(
+            "---\nname: \"ask-matt\"\nlicense: 'MIT'\n---\n"
+        )
+        self.assertEqual(fields["name"], "ask-matt")
+        self.assertEqual(fields["license"], "MIT")
+
+    def test_nested_blocks_and_comments_are_ignored(self) -> None:
+        fields = deck.parse_frontmatter(
+            "---\nname: demo\ndescription: d\nmetadata:\n  hermes:\n"
+            "    tags: [a, b]\n# comment\nversion: 1.0.0\n---\nbody\n"
+        )
+        self.assertEqual(fields["name"], "demo")
+        self.assertEqual(fields["version"], "1.0.0")
+        self.assertNotIn("hermes", fields)
+        self.assertNotIn("tags", fields)
+
+    def test_no_frontmatter_returns_empty_fields(self) -> None:
+        fields, body = deck.split_frontmatter("# Just a heading\n")
+        self.assertEqual(fields, {})
+        self.assertEqual(body, "# Just a heading\n")
+
+    def test_unterminated_fence_is_not_frontmatter(self) -> None:
+        self.assertEqual(deck.parse_frontmatter("---\nname: demo\n"), {})
+
+
+class TestDeckDiscovery(unittest.TestCase):
+    """Card building, the symlink-following walk, and de-duplication."""
+
+    def test_card_uses_heading_as_title_and_path_for_box(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            cards = deck.discover_skills(home / "skills", "test")
+            by_name = {card.name: card for card in cards}
+            self.assertEqual(
+                sorted(by_name),
+                ["ascii-art", "linked", "standalone"],
+            )
+            nested = by_name["ascii-art"]
+            self.assertEqual(nested.box, "creative")
+            self.assertEqual(nested.category, "creative/ascii-art")
+            self.assertEqual(nested.title, "Ascii Art")
+            self.assertEqual(nested.origin, deck.HERMES_ORIGIN)
+            self.assertTrue(nested.path.endswith("SKILL.md"))
+
+    def test_symlinked_skill_directory_is_followed(self) -> None:
+        # Path.rglob would miss this one entirely.
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            names = [c.name for c in deck.discover_skills(home / "skills", "test")]
+            self.assertIn("linked", names)
+
+    def test_nested_skill_inside_a_skill_is_not_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            names = [c.name for c in deck.discover_skills(home / "skills", "test")]
+            self.assertNotIn("bogus", names)
+
+    def test_missing_root_is_empty_not_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(deck.discover_skills(Path(tmp) / "nope", "test"), [])
+
+    def test_card_falls_back_to_directory_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill_dir(root, "no-frontmatter", title=None, with_frontmatter=False)
+            cards = deck.discover_skills(root, "test")
+            self.assertEqual([card.name for card in cards], ["no-frontmatter"])
+            self.assertEqual(cards[0].description, "(no description)")
+            self.assertEqual(cards[0].title, "No Frontmatter")
+
+    def test_duplicates_by_name_and_path_are_dropped(self) -> None:
+        def card(name: str, origin: str, path: str, source: str) -> deck.Card:
+            return deck.Card(
+                name, name.upper(), "d", "box", "box", origin, source, path
+            )
+
+        first = card("a", "hermes", "/x/SKILL.md", "s1")
+        same_name = card("a", "hermes", "/y/SKILL.md", "s2")
+        same_path = card("b", "hermes", "/x/SKILL.md", "s1")
+        other_origin = card("a", "framework", "/z", "s")
+        kept, dropped = deck._dedupe([first, same_name, same_path, other_origin])
+
+        # same_name is dropped by name, same_path by path; the framework
+        # card shares the name but a different origin, so it survives.
+        self.assertEqual([card.name for card in kept], ["a", "a"])
+        self.assertEqual(kept[1].origin, "framework")
+        self.assertEqual(dropped, 2)
+
+
+class TestDeckRoots(unittest.TestCase):
+    """Which Hermes skill directories get read, and why."""
+
+    def test_default_home_follows_hermes_home_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                self.assertEqual(deck.default_hermes_home(), home)
+                roots = deck.resolve_hermes_roots()
+            self.assertEqual([r.path for r in roots], [home / "skills"])
+
+    def test_all_profiles_finds_siblings_when_home_is_a_profile(self) -> None:
+        # $HERMES_HOME points at a profile directory in a live session.
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            profile_dir = home / "profiles" / "other"
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(profile_dir)}):
+                roots = deck.resolve_hermes_roots(all_profiles=True)
+            self.assertEqual([r.path for r in roots], [profile_dir / "skills"])
+
+    def test_all_profiles_skips_hidden_and_keeps_priority_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            roots = deck.resolve_hermes_roots(home, all_profiles=True)
+            self.assertEqual(
+                [r.path for r in roots],
+                [home / "skills", home / "profiles" / "other" / "skills"],
+            )
+            self.assertTrue(all(".deleted" not in str(r.path) for r in roots))
+
+    def test_named_profile_reads_that_profile_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            roots = deck.resolve_hermes_roots(home, profile="other", all_profiles=True)
+            self.assertEqual(
+                [r.path for r in roots], [home / "profiles" / "other" / "skills"]
+            )
+
+
+class TestDeckBuildAndRender(unittest.TestCase):
+    """build_deck, HTML escaping and the JSON payload."""
+
+    def test_build_deck_counts_and_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            data = deck.build_deck(
+                PROJECT_ROOT,
+                hermes_home=home,
+                all_profiles=True,
+                include_framework=False,
+            )
+            self.assertEqual(len(data.cards), 4)
+            self.assertEqual(data.dropped, 0)
+            labels = [status.label for status in data.sources]
+            self.assertEqual(labels, ["running hermes", "profile other"])
+            self.assertTrue(all(status.present for status in data.sources))
+
+    def test_build_deck_reports_a_missing_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data = deck.build_deck(
+                PROJECT_ROOT,
+                hermes_home=Path(tmp) / "absent",
+                include_framework=False,
+            )
+            self.assertEqual(data.cards, [])
+            self.assertFalse(data.sources[0].present)
+            self.assertIn("[MISSING]", deck.describe(data))
+
+    def test_unreadable_skill_file_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad = root / "broken"
+            bad.mkdir()
+            (bad / "SKILL.md").symlink_to(root / "gone" / "SKILL.md")
+            good = write_skill_dir(root, "good", title="Good")
+            cards = deck.discover_skills(root, "test")
+            self.assertEqual([card.name for card in cards], ["good"])
+            self.assertTrue(good.is_dir())
+
+    def test_render_escapes_skill_text(self) -> None:
+        card = deck.Card(
+            name="evil",
+            title="<script>alert(1)</script>",
+            description="uses <html> & `--flags` **bold**",
+            box="dev",
+            category="dev",
+            origin="hermes",
+            source="running hermes",
+            path="/tmp/SKILL.md",
+        )
+        page = deck.render_page(deck.DeckData(cards=[card], sources=[]))
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertIn("&amp;", page)
+        self.assertIn("<code>--flags</code>", page)
+        self.assertIn("<strong>bold</strong>", page)
+
+    def test_render_reports_counts_origins_and_boxes(self) -> None:
+        cards = [
+            deck.Card("a", "A", "d", "box-one", "box-one", "framework", "s", "/a"),
+            deck.Card("b", "B", "d", "box-two", "box-two", "hermes", "s", "/b"),
+            deck.Card("c", "C", "d", "box-two", "box-two", "hermes", "s", "/c"),
+        ]
+        sources = [deck.SourceStatus("running hermes", Path("/nowhere"))]
+        page = deck.render_page(deck.DeckData(cards=cards, sources=sources, dropped=7))
+        self.assertIn("<strong>3</strong> skills", page)
+        self.assertIn("1 framework, 2 hermes", page)
+        self.assertIn("<strong>2</strong> boxes", page)
+        self.assertIn("7 duplicate card(s) skipped", page)
+        self.assertIn('class="missing"', page)
+        self.assertIn("0/1 present", page)
+        self.assertIn('class="card framework"', page)
+        self.assertIn('class="card hermes"', page)
+
+    def test_render_empty_deck_says_so(self) -> None:
+        page = deck.render_page(deck.DeckData())
+        self.assertIn("No skills found", page)
+
+    def test_json_payload_shape(self) -> None:
+        card = deck.Card("a", "A", "d", "box", "box", "hermes", "s", "/a")
+        payload = deck.json_payload(
+            deck.DeckData(
+                cards=[card],
+                sources=[deck.SourceStatus("running hermes", Path("/nowhere"), 1)],
+                dropped=2,
+            )
+        )
+        self.assertEqual(payload["counts"]["total"], 1)
+        self.assertEqual(payload["counts"]["duplicates_dropped"], 2)
+        self.assertFalse(payload["sources"][0]["present"])
+        self.assertEqual(payload["cards"][0]["name"], "a")
+
+    def test_describe_mentions_every_source(self) -> None:
+        data = deck.build_deck(
+            PROJECT_ROOT,
+            hermes_home=Path("/definitely/absent"),
+            include_framework=False,
+        )
+        self.assertIn("0 skills", deck.describe(data))
+        self.assertIn("/definitely/absent", deck.describe(data))
+
+
+class TestDeckServer(unittest.TestCase):
+    """The HTTP surface, exercised for real over a socket."""
+
+    def setUp(self) -> None:
+        self._saved = deck.DeckHandler.data
+
+    def tearDown(self) -> None:
+        deck.DeckHandler.data = self._saved
+
+    def test_serves_html_json_and_404(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = make_hermes_home(Path(tmp))
+            data = deck.build_deck(
+                PROJECT_ROOT,
+                hermes_home=home,
+                all_profiles=True,
+                include_framework=False,
+            )
+            deck.DeckHandler.data = data
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), deck.DeckHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                with urllib.request.urlopen(f"{base}/", timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn("text/html", response.headers.get("Content-Type", ""))
+                    page = response.read().decode("utf-8")
+                with urllib.request.urlopen(f"{base}/skills.json", timeout=10) as res:
+                    payload = json.loads(res.read().decode("utf-8"))
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(f"{base}/nope", timeout=10)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertIn("Hermes Skill Deck", page)
+        self.assertIn("standalone", page)
+        self.assertEqual(caught.exception.code, 404)
+        self.assertEqual(payload["counts"]["total"], len(data.cards))
+        self.assertEqual(payload["counts"]["hermes"], 4)
+        self.assertEqual(
+            sorted(card["name"] for card in payload["cards"]),
+            ["ascii-art", "beta", "linked", "standalone"],
+        )
