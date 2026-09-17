@@ -431,6 +431,13 @@ class PortalHandler(BaseHTTPRequestHandler):
         return
 
 
+def write_policy(state: PortalState | None) -> str:
+    """One line saying exactly what a request may write, for the startup banner."""
+    if state is None or state.path is None:
+        return "Read-only: writing is switched off (--no-state)."
+    return f"Read-only except favourites: POST /favorites.json writes {state.path}."
+
+
 def serve(
     hermes_home: Path | None = None,
     profile: str | None = None,
@@ -487,7 +494,8 @@ def serve(
     print(
         f"Hermes Portal running at http://{bound_host}:{bound_port}  (built {built_at})"
     )
-    print("Read-only. Press Ctrl+C to stop.")
+    print(write_policy(PortalHandler.state))
+    print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -501,7 +509,10 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the portal's argument parser."""
     parser = argparse.ArgumentParser(
         prog="python -m hermes.portal",
-        description="Read-only drill-down portal over everything Hermes keeps.",
+        description=(
+            "Drill-down portal over everything Hermes keeps. Every source is opened "
+            "read-only; favourites are the only write, kept in the portal's own file."
+        ),
     )
     parser.add_argument(
         "--hermes-home",

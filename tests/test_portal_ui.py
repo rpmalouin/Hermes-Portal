@@ -390,6 +390,21 @@ class RenderTestCase(unittest.TestCase):
         self.assertIn("state is broken", page)
 
 
+class BannerTestCase(unittest.TestCase):
+    """The startup banner must not claim more safety than the process has."""
+
+    def test_without_a_store_it_says_writing_is_off(self) -> None:
+        line = server.write_policy(None)
+        self.assertIn("Read-only", line)
+        self.assertIn("--no-state", line)
+
+    def test_with_a_store_it_names_the_one_file_a_request_can_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            line = server.write_policy(PortalState(Path(tmp) / "state.json"))
+        self.assertIn("Read-only except favourites", line)
+        self.assertIn("state.json", line)
+
+
 class FavouritesRouteTestCase(unittest.TestCase):
     """The POST and its failures, against a live handler on an ephemeral port."""
 
