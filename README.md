@@ -42,6 +42,7 @@ hermes/
       health.py      launchd services, heartbeats, ports, tickers, storage
       logs.py        log tails, error signatures, credential scrubbing
       memory.py      MEMORY.md and USER.md per profile, against their budgets
+      plugins.py     plugin manifests, kinds and requirements -- never imported
       vault.py       Obsidian notes: backlinks, tags, tasks, the Kanban board
       graph.py       the code graph: communities, risk, callers, flows
 tests/
@@ -53,6 +54,7 @@ tests/
   test_portal_heavy.py 35 tests, the vault and the code graph
   test_portal_ui.py  62 tests, favourites, theme, palette and the box tiles
   test_portal_memory.py 26 tests, the memory files and their budgets
+  test_portal_plugins.py 26 tests, plugin discovery (and never running one)
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -339,10 +341,11 @@ Eight domains, each with collections, drill-down and search:
 | vault | the Obsidian vault (`--vault`, default `/Volumes/Data/MyObsidian`) | all notes indexed in memory, frontmatter, `[[wiki links]]`, checkboxes, the Kanban board | 762 notes — plus 1,116 links, 141 tags, 76 open items |
 | graph | `.code-review-graph/graph.db` (`--graph-db`) | precomputed tables: communities, risk, flows; FTS for search | 38 communities — plus 170,971 nodes, 1.5M edges (cached count) |
 | memory | `memories/MEMORY.md` and `USER.md`, per profile, plus `config.yaml` | every entry, split on the section sign, measured against its character budget | 6 files over 3 profiles — 42 entries; one at 2,200/2,200 |
+| plugins | `plugin.yaml` manifests under the bundled tree, `~/.hermes/plugins/`, each profile's, and `config.yaml` | names, kinds, versions, file lists, declared env vars and hooks | 105 plugins in 8 kinds; 41 declare requirements |
 
 P0 was skills/sessions/cron; P1 added usage, health and logs; P2 the two heavy planes,
-the vault and the code graph; P5 memory. Every source is read-only; the only write in
-the project is a favourite.
+the vault and the code graph; P5 memory; P6 plugins. Every source is read-only; the only
+write in the project is a favourite.
 
 **Vault.** 762 notes totalling ~3 MB is small enough to index in one pass and keep in
 memory, which buys the thing a folder listing cannot: **backlinks**. Open any note and
@@ -351,6 +354,21 @@ what links back to it. Tags come from frontmatter; open work comes from two conv
 because the vault has two — a checkbox line in an ordinary note is open while unchecked,
 and a **Kanban card is open while its `Status` field is not done**, since the board's
 checkboxes are not maintained. Reading the box alone reported 87 finished cards as open.
+
+**Plugins.** What Hermes is extended with, read from `plugin.yaml` manifests **without
+running any of it**: the domain never imports a plugin, never executes its code, and
+never evaluates a manifest with a full YAML parser (a documented subset handles the
+three shapes these files use). That is not a shortcut — a plugin is arbitrary Python,
+and a page that renders an inventory must not import one; the fixture suite ships
+plugins that write a marker file on import and asserts the marker never appears. It
+reports the bundled tree and every user/profile plugins directory, the kind either
+declared in the manifest or inferred from its container (and says which), the files a
+plugin ships, and the environment variable **names** it needs — never a value: 41
+manifests declare `requires_env`, and a neighbouring `.env` is one thing this domain
+does not read. Enablement is deliberately not claimed: this config has no
+`plugins.enabled` list, so the page says which plugins `known_plugin_toolsets` names
+per surface instead of inventing an on/off boolean, and directories without a manifest
+are listed as such rather than counted as plugins.
 
 **Memory.** The two files Hermes keeps per profile -- `MEMORY.md` (its own notes) and
 `USER.md` (who it is working with) -- with entries split on the section sign and each

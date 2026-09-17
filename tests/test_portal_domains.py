@@ -513,6 +513,24 @@ class TestLogsDomain(BaseP1):
             )
 
 
+# The one place the portal's promised planes are enumerated.  Everything else asserts
+# a property (membership, or that the index agrees with the registry), so adding a
+# domain does not mean editing four literal lists -- and a test that fails when data
+# expected to change is updated is not a test worth keeping.
+EXPECTED_DOMAINS = (
+    "cron",
+    "graph",
+    "health",
+    "logs",
+    "memory",
+    "plugins",
+    "sessions",
+    "skills",
+    "usage",
+    "vault",
+)
+
+
 class TestRegistryInvariants(BaseP1):
     """Whole-system checks that hold for every domain and collection."""
 
@@ -533,19 +551,10 @@ class TestRegistryInvariants(BaseP1):
         self.registry = default_registry(hermes_home=self.root)
 
     def test_all_domains_are_registered(self) -> None:
+        """The promised planes, in one place (see EXPECTED_DOMAINS)."""
         self.assertEqual(
             self.registry.keys(),
-            [
-                "cron",
-                "graph",
-                "health",
-                "logs",
-                "memory",
-                "sessions",
-                "skills",
-                "usage",
-                "vault",
-            ],
+            list(EXPECTED_DOMAINS),
         )
 
     def test_every_collection_count_matches_its_records(self) -> None:

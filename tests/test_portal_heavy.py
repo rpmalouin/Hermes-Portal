@@ -599,21 +599,11 @@ class GraphTestCase(unittest.TestCase):
 class RegistryTestCase(unittest.TestCase):
     """The registry the server actually builds."""
 
-    def test_the_registry_lists_the_domains_it_has(self) -> None:
-        registry = default_registry()
-        self.assertEqual(
-            set(registry.keys()),
-            {
-                "cron",
-                "graph",
-                "health",
-                "logs",
-                "memory",
-                "sessions",
-                "skills",
-                "usage",
-                "vault",
-            },
+    def test_the_registry_lists_the_planes_this_file_covers(self) -> None:
+        """Membership, not a snapshot: the exact list lives in test_portal_domains."""
+        keys = set(default_registry().keys())
+        self.assertLessEqual(
+            {"skills", "usage", "health", "logs", "vault", "graph"}, keys
         )
 
     def test_every_domain_has_a_description_and_a_source(self) -> None:

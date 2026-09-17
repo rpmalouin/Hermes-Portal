@@ -349,26 +349,5 @@ class MemoryDomainTestCase(unittest.TestCase):
         self.assertTrue(groups["memory"])
 
 
-class RegistryCountTestCase(unittest.TestCase):
-    """The registry grew again: the memory domain is the ninth."""
-
-    def test_the_registry_has_nine_domains(self) -> None:
-        registry = server.default_registry(hermes_home=Path(tempfile.mkdtemp()))
-        self.assertEqual(
-            sorted(registry.keys()),
-            [
-                "cron",
-                "graph",
-                "health",
-                "logs",
-                "memory",
-                "sessions",
-                "skills",
-                "usage",
-                "vault",
-            ],
-        )
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -1067,20 +1067,9 @@ class TestServer(unittest.TestCase):
                 payload = json.loads(body)
                 self.assertEqual(status, 200)
                 self.assertIn("application/json", ctype)
-                self.assertEqual(
-                    sorted(payload["counts"]),
-                    [
-                        "cron",
-                        "graph",
-                        "health",
-                        "logs",
-                        "memory",
-                        "sessions",
-                        "skills",
-                        "usage",
-                        "vault",
-                    ],
-                )
+                registry = server.PortalHandler.registry
+                assert registry is not None
+                self.assertEqual(sorted(payload["counts"]), sorted(registry.keys()))
 
                 _status, _ctype, body = fetch(f"{base}/skills.json")
                 domain_payload = json.loads(body)

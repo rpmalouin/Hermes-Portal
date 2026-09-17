@@ -22,6 +22,7 @@ from . import (
     health,
     logs,
     memory,
+    plugins,
     sessions,
     skills,
     usage,
@@ -76,4 +77,5 @@ def default_registry(
     registry.register(vault.build_domain(vault_root))
     registry.register(graph.build_domain(hermes_home=root, graph_db=graph_db))
     registry.register(memory.build_domain(hermes_home=hermes_home))
+    registry.register(plugins.build_domain(hermes_home=hermes_home))
     return registry
