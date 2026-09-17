@@ -407,5 +407,130 @@ class RegistryTestCase(unittest.TestCase):
         self.assertEqual(registry.get("plugins").key, "plugins")
 
 
+class PluginPrimitivesTestCase(unittest.TestCase):
+    """The plugin domain's helpers, called by name.
+
+    These were closures inside a 528-line factory until the conversion, so no test could
+    reference one by name and the code graph listed them among the project's untested
+    hotspots.  They are methods now, so this calls them -- including the ``>= 2``
+    boundary in ``_container_for`` that classified every container plugin as top-level.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = make_agent_tree(Path(self._tmp.name))
+        self.domain = plugins_domain.PluginsDomain(hermes_home=self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_snapshot_is_read_once_and_can_be_forgotten(self) -> None:
+        """The cache is the base class's now, not a dict the factory closed over."""
+        first = self.domain.snapshot()
+        self.assertIs(self.domain.snapshot(), first)
+        self.domain.forget()
+        self.assertIsNot(self.domain.snapshot(), first)
+
+    def test_read_walks_every_root_and_keeps_the_listings(self) -> None:
+        current = self.domain.read()
+        self.assertTrue(current.plugins)
+        self.assertTrue(current.manifestless)
+        self.assertTrue(current.as_of)
+        self.assertIn("cli", current.known_toolsets)
+
+    def test_roots_name_the_bundled_tree_and_the_user_tree(self) -> None:
+        roots = self.domain.roots()
+        labels = [label for label, _path in roots]
+        self.assertEqual(labels[0], "bundled")
+        self.assertIn("user", labels)
+        self.assertTrue(all(path.name == "plugins" for _label, path in roots))
+
+    def test_sources_report_only_the_roots_that_are_read(self) -> None:
+        current = self.domain.read()
+        sources = self.domain.sources(current)
+        self.assertTrue(sources)
+        self.assertTrue(all(source.label.endswith("plugins") for source in sources))
+        # the domain reports at most the first four roots, all named in the snapshot
+        self.assertEqual(len(sources), min(4, len(current.roots)))
+
+    def test_container_for_separates_container_and_top_level(self) -> None:
+        """The `> 2` bug would call every one of these top-level."""
+        self.assertEqual(plugins_domain._container_for(Path("web/backend0")), "web")
+        self.assertEqual(
+            plugins_domain._container_for(Path("a/b")), "a"
+        )  # one level below the root is a container
+        self.assertEqual(plugins_domain._container_for(Path("spotify")), "")
+        self.assertEqual(plugins_domain._container_for(Path("web")), "")
+
+    def test_the_plugin_record_carries_badges_and_a_key(self) -> None:
+        current = self.domain.read()
+        plugin = current.by_key()["web/backend0"]
+        record = self.domain._plugin_record(plugin, current)
+        self.assertEqual(record.id, "web/backend0")
+        self.assertIn("kind: backend", record.badges)
+        self.assertIn("bundled", record.badges)
+
+    def test_the_picker_offers_the_kinds_it_found(self) -> None:
+        picker = self.domain._picker(self.domain.read())
+        self.assertTrue(picker.options)
+        self.assertTrue(all(option[0] for option in picker.options))
+
+    def test_each_collection_builder_counts_what_it_carries(self) -> None:
+        current = self.domain.read()
+        for collection in (
+            self.domain._plugins_collection(current),  # every plugin, capped
+            self.domain._kinds_collection(current),
+            self.domain._needs_collection(current),
+        ):
+            with self.subTest(collection=collection.key):
+                self.assertTrue(collection.records)
+                if not collection.truncated:
+                    self.assertEqual(collection.count.value, len(collection.records))
+
+    def test_snapshot_by_key_and_known_for_agree_with_the_config(self) -> None:
+        current = self.domain.read()
+        keys = current.by_key()
+        self.assertIn("spotify", keys)
+        self.assertIn("web/backend0", keys)
+        named = current.known_for(keys["spotify"])
+        self.assertEqual(named, ("cli",))
+
+    def test_parse_manifest_reads_scalars_lists_and_folded_blocks(self) -> None:
+        text = MANIFEST.format(
+            name="x", label="X", kind="backend", version="1", env="K"
+        )
+        scalars, lists = plugins_domain.parse_manifest(text)
+        self.assertEqual(scalars["name"], "x")
+        self.assertEqual(scalars["kind"], "backend")
+        self.assertEqual(
+            scalars["description"],
+            "A fixture plugin used by the suite, described across "
+            "several folded lines.",
+        )
+        self.assertEqual(lists["requires_env"], ("K",))
+        self.assertEqual(lists["optional_env"], ("OPTIONAL_ONE", "OPTIONAL_TWO"))
+        self.assertEqual(lists["hooks"], ("pre_tool_call",))
+        self.assertNotIn("unknown_block", scalars)
+
+    def test_plugin_accessors_read_the_declared_fields(self) -> None:
+        current = self.domain.read()
+        plugin = current.by_key()["web/backend0"]
+        self.assertEqual(plugin.get("author"), "Test Author")
+        self.assertEqual(plugin.get("nothing_there", "fallback"), "fallback")
+        self.assertEqual(plugin.label, "Backend-0")
+        self.assertEqual(plugin.kind, "backend")
+        self.assertTrue(plugin.kind_declared)
+        self.assertTrue(plugin.description)
+        self.assertEqual(plugin.requires_env, ("FIXTURE_KEY",))
+        self.assertEqual(plugin.optional_env, ("OPTIONAL_ONE", "OPTIONAL_TWO"))
+        self.assertTrue(plugin.files)
+        self.assertTrue(plugin.size)
+
+    def test_build_domain_still_returns_a_wired_domain(self) -> None:
+        domain = plugins_domain.build_domain(hermes_home=self.root)
+        self.assertEqual(domain.key, "plugins")
+        self.assertEqual(domain.overview().key, "overview")
+
+
 if __name__ == "__main__":
     unittest.main()

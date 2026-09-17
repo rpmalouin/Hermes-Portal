@@ -53,6 +53,7 @@ from ..sources import (
     snippet,
     truncate,
 )
+from .base import SnapshotDomain
 
 MANIFEST = "plugin.yaml"
 MAX_DEPTH = 2
@@ -330,57 +331,69 @@ def _known_toolsets(root: Path) -> tuple[dict[str, tuple[str, ...]], str]:
     return found, ""
 
 
-def build_domain(
-    hermes_home: Path | None = None, agent_dir: Path | None = None
-) -> Domain:
-    """Build the plugins domain.
+class PluginsDomain(SnapshotDomain[_Snapshot]):
+    """What Hermes is extended with, read without running any of it.
 
-    Args:
-        hermes_home: Hermes home or profile directory.
-        agent_dir: The agent installation holding the bundled ``plugins/`` tree;
-            ``None`` uses ``<hermes root>/hermes-agent``.
+    The manifests and directory listings are read once, on first use, and every page is
+    served from that snapshot -- the same contract as the other domains, with the cache
+    the base class already owns instead of a dict this factory used to close over.
 
-    Returns:
-        A :class:`~hermes.portal.model.Domain`.  Manifests and file lists are read once,
-        on first use, and reused after.
+    ``agent_dir`` is the one thing this domain needs beyond the Hermes home: the bundled
+    plugin tree lives in the agent installation, not in the home.
     """
-    state: dict[str, _Snapshot] = {}
 
-    def roots() -> tuple[tuple[str, Path], ...]:
-        root = hermes_root(hermes_home)
-        install = Path(agent_dir) if agent_dir is not None else root / AGENT_DIR
+    key = "plugins"
+    title = "Plugins"
+    summary = (
+        "What Hermes is extended with, read from manifests without importing any of it."
+    )
+
+    def __init__(
+        self, hermes_home: Path | None = None, agent_dir: Path | None = None
+    ) -> None:
+        """Point at the trees; nothing is read until a page asks.
+
+        Args:
+            hermes_home: Hermes home or profile directory.
+            agent_dir: The agent installation holding the bundled ``plugins/`` tree;
+                ``None`` uses ``<hermes root>/hermes-agent``.
+        """
+        super().__init__(hermes_home)
+        self.agent_dir = Path(agent_dir) if agent_dir is not None else None
+
+    def roots(self) -> tuple[tuple[str, Path], ...]:
+        root = hermes_root(self.hermes_home)
+        install = (
+            Path(self.agent_dir) if self.agent_dir is not None else root / AGENT_DIR
+        )
         found: list[tuple[str, Path]] = [("bundled", install / "plugins")]
         found.append(("user", root / "plugins"))
         home = (
-            Path(hermes_home)
-            if hermes_home is not None
+            Path(self.hermes_home)
+            if self.hermes_home is not None
             else skill_trees.default_hermes_home()
         )
         for profile_dir in skill_trees.profile_dirs(home):
             found.append((f"user:{profile_dir.name}", profile_dir / "plugins"))
         return tuple(found)
 
-    def snapshot() -> _Snapshot:
-        if "value" in state:
-            return state["value"]
+    def read(self) -> _Snapshot:
         plugins: list[Plugin] = []
         manifestless: list[str] = []
-        for source, directory in roots():
+        for source, directory in self.roots():
             found, loose = _discover(directory, source)
             plugins.extend(found)
             manifestless.extend(loose)
-        known, _config_error = _known_toolsets(hermes_root(hermes_home))
-        value = _Snapshot(
+        known, _config_error = _known_toolsets(hermes_root(self.hermes_home))
+        return _Snapshot(
             plugins=tuple(plugins),
             manifestless=tuple(manifestless),
             known_toolsets=known,
-            roots=roots(),
+            roots=self.roots(),
             as_of=as_of(),
         )
-        state["value"] = value
-        return value
 
-    def sources(current: _Snapshot) -> tuple[Source, ...]:
+    def sources(self, current: _Snapshot) -> tuple[Source, ...]:
         """Every root this domain looked in, present or not."""
         out: list[Source] = []
         for label, directory in current.roots[:4]:
@@ -396,7 +409,7 @@ def build_domain(
             )
         return tuple(out)
 
-    def _plugin_record(plugin: Plugin, current: _Snapshot) -> Record:
+    def _plugin_record(self, plugin: Plugin, current: _Snapshot) -> Record:
         """One plugin as a list row."""
         badges = [f"kind: {plugin.kind}", plugin.source]
         if not plugin.kind_declared:
@@ -428,7 +441,7 @@ def build_domain(
             ),
         )
 
-    def _plugins_collection(current: _Snapshot) -> Collection:
+    def _plugins_collection(self, current: _Snapshot) -> Collection:
         """Every discovered plugin, bundled first then user."""
         rows = sorted(
             current.plugins,
@@ -457,10 +470,10 @@ def build_domain(
             "Every plugin the loader can discover, with the kind, source and files its "
             "manifest and directory describe.",
             f"directories holding a {MANIFEST}",
-            [_plugin_record(plugin, current) for plugin in rows],
+            [self._plugin_record(plugin, current) for plugin in rows],
             cap=PLUGINS_CAP,
-            sources=sources(current),
-            picker=_picker(current),
+            sources=self.sources(current),
+            picker=self._picker(current),
             extra_counts=(
                 Count(len(current.plugins), "plugins with a manifest"),
                 Count(named, "named by config.yaml"),
@@ -474,7 +487,7 @@ def build_domain(
             as_of=current.as_of,
         )
 
-    def _picker(current: _Snapshot) -> Picker:
+    def _picker(self, current: _Snapshot) -> Picker:
         """A dropdown over the kinds that are actually present."""
         counter = Counter(plugin.kind for plugin in current.plugins)
         return Picker(
@@ -487,7 +500,7 @@ def build_domain(
             selected="",
         )
 
-    def _kinds_collection(current: _Snapshot) -> Collection:
+    def _kinds_collection(self, current: _Snapshot) -> Collection:
         """One record per kind."""
         by_kind: dict[str, list[Plugin]] = {}
         for plugin in current.plugins:
@@ -525,7 +538,7 @@ def build_domain(
             "What sorts of plugin the tree holds, and how each kind declares itself.",
             "distinct plugin kinds (a manifest's kind, else its directory)",
             records,
-            sources=sources(current),
+            sources=self.sources(current),
             notes=(
                 "where a manifest does not declare a kind it is inferred from the "
                 "directory it sits in, and the plugin's row says so",
@@ -533,7 +546,7 @@ def build_domain(
             as_of=current.as_of,
         )
 
-    def _needs_collection(current: _Snapshot) -> Collection:
+    def _needs_collection(self, current: _Snapshot) -> Collection:
         """Plugins that declare requirements, by environment variable name only."""
         rows = [
             plugin
@@ -587,13 +600,15 @@ def build_domain(
             "plugins declaring requires_env, optional_env or pip_dependencies",
             records,
             cap=PLUGINS_CAP,
-            sources=sources(current),
+            sources=self.sources(current),
             as_of=current.as_of,
         )
 
-    def collections(filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections.  ``?kind=`` narrows to one kind."""
-        current = snapshot()
+        current = self.snapshot()
         wanted = ((filters or {}).get("kind") or "").strip()
         if wanted:
             current = _Snapshot(
@@ -603,9 +618,9 @@ def build_domain(
                 roots=current.roots,
                 as_of=current.as_of,
             )
-        plugins = _plugins_collection(current)
+        plugins = self._plugins_collection(current)
         if wanted:
-            everything = snapshot().plugins
+            everything = self.snapshot().plugins
             counter = Counter(plugin.kind for plugin in everything)
             hidden = len(everything) - len(current.plugins)
             # a filtered count has to say what it counts: the rule is no longer "every
@@ -636,11 +651,15 @@ def build_domain(
                 + (() if current.plugins else (f"no plugin of kind {wanted!r}",)),
                 as_of=plugins.as_of,
             )
-        return [plugins, _kinds_collection(current), _needs_collection(current)]
+        return [
+            plugins,
+            self._kinds_collection(current),
+            self._needs_collection(current),
+        ]
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """Headline: how many plugins, of which kinds, and which config names."""
-        current = snapshot()
+        current = self.snapshot()
         kinds = Counter(plugin.kind for plugin in current.plugins)
         named = [plugin for plugin in current.plugins if current.known_for(plugin)]
         bundled = sum(1 for plugin in current.plugins if plugin.source == "bundled")
@@ -674,7 +693,7 @@ def build_domain(
             # (Slicing here before build_collection is the count-vs-sample bug: the
             # headline then reads the size of the sample, not of the tree.)
             [
-                _plugin_record(plugin, current)
+                self._plugin_record(plugin, current)
                 for plugin in sorted(
                     current.plugins,
                     key=lambda item: (
@@ -685,7 +704,7 @@ def build_domain(
                 )
             ],
             cap=5,
-            sources=sources(current),
+            sources=self.sources(current),
             extra_counts=(
                 Count(len(current.plugins), "plugins with a manifest"),
                 Count(len(kinds), "distinct kinds"),
@@ -704,9 +723,9 @@ def build_domain(
             as_of=current.as_of,
         )
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One plugin: its manifest, its directory, and what it declares."""
-        current = snapshot()
+        current = self.snapshot()
         plugin = current.by_key().get(record_id)
         if plugin is None:
             return None
@@ -746,9 +765,9 @@ def build_domain(
             body=truncate(plugin.manifest or "(no manifest text)", BODY_CAP),
         )
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind a plugin: its files, and its same-kind neighbours."""
-        current = snapshot()
+        current = self.snapshot()
         plugin = current.by_key().get(record_id)
         if plugin is None:
             return []
@@ -785,7 +804,7 @@ def build_domain(
                     "The rest of this kind, so you can see what a slot could hold "
                     "instead.",
                     f"{plugin.kind} plugins other than this one",
-                    [_plugin_record(other, current) for other in siblings[:20]],
+                    [self._plugin_record(other, current) for other in siblings[:20]],
                     cap=20,
                     as_of=current.as_of,
                 )
@@ -812,12 +831,12 @@ def build_domain(
             )
         return sections
 
-    def search(query: str, limit: int) -> Sequence[Record]:
+    def search(self, query: str, limit: int) -> Sequence[Record]:
         """Find plugins by name, label, kind, author or description."""
         wanted = query.strip().lower()
         if not wanted:
             return []
-        current = snapshot()
+        current = self.snapshot()
         hits: list[Record] = []
         for plugin in current.plugins:
             haystack = " ".join(
@@ -847,14 +866,19 @@ def build_domain(
                 break
         return hits
 
-    return Domain(
-        key="plugins",
-        title="Plugins",
-        summary="What Hermes is extended with, read from manifests without importing "
-        "any of it.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(
+    hermes_home: Path | None = None, agent_dir: Path | None = None
+) -> Domain:
+    """Build the plugins domain.
+
+    Args:
+        hermes_home: Hermes home or profile directory.
+        agent_dir: The agent installation holding the bundled ``plugins/`` tree;
+            ``None`` uses ``<hermes root>/hermes-agent``.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.  Manifests and file lists are read once,
+        on first use, and reused after.
+    """
+    return PluginsDomain(hermes_home, agent_dir).domain()

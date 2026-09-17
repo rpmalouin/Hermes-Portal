@@ -390,7 +390,10 @@ for the domain plus **319** for a new `memory_files.py` that owns the file forma
 history layer, and its 793-line factory is **12** lines. `graph.py` followed: its 567-line
 factory is **9** lines, and since every query there is already narrow and indexed it takes
 no snapshot at all — the base's snapshot machinery is optional, and the one slow number
-(`count(*)` over 1.5M edges) keeps the TTL cache it already had.
+(`count(*)` over 1.5M edges) keeps the TTL cache it already had. `plugins.py` is the
+third: its 528-line factory is **9** lines, and it *lost* code in the move — the
+`state: dict` cache the closure kept is now the base class's, so a whole hand-rolled
+memo layer deleted itself rather than being rewritten.
 
 The conversion found a real bug in itself: those helpers take the snapshot they are
 *handed*, because that is how a filtered view reaches them, and the first cut had them
