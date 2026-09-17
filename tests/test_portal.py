@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -33,6 +34,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes.portal import render, server, sources  # noqa: E402
 from hermes.portal.domains import cron as cron_domain  # noqa: E402
+from hermes.portal.domains import health as health_domain  # noqa: E402
+from hermes.portal.domains import logs as logs_domain  # noqa: E402
 from hermes.portal.domains import sessions as sessions_domain  # noqa: E402
 from hermes.portal.domains import skills as skills_domain  # noqa: E402
 from hermes.portal.model import (  # noqa: E402
@@ -731,16 +734,22 @@ class TestSessionsDomain(unittest.TestCase):
         provider = self.domain.collections({"provider": "deepseek"})[0]
         self.assertEqual(provider.count.value, 1)
 
-    def test_grouped_and_usage_collections(self) -> None:
-        by_model = self.domain.collections()[2]
-        self.assertEqual(by_model.count.value, 2)
+    def test_usage_rollups_live_only_in_the_usage_domain(self) -> None:
+        """One home per fact: sessions keeps the index, usage keeps the maths."""
+        self.assertEqual(
+            [collection.key for collection in self.domain.collections()], ["sessions"]
+        )
+        usage = server.default_registry(hermes_home=self.root).get("usage")
+        self.assertEqual(
+            [collection.key for collection in usage.collections()],
+            ["by-day", "by-model", "by-provider", "top-sessions"],
+        )
+        by_model = next(c for c in usage.collections() if c.key == "by-model")
         self.assertEqual(
             {record.title for record in by_model.records},
             {"gemini-3.6-flash", "deepseek-flash"},
         )
-        usage = self.domain.collections()[1]
-        self.assertEqual(usage.count.value, 2)
-        costs = [dict(record.fields)["cost (estimated)"] for record in usage.records]
+        costs = [dict(record.fields)["cost (estimated)"] for record in by_model.records]
         self.assertTrue(all(cost.startswith("$") for cost in costs), costs)
 
     def test_detail_fields_and_cost(self) -> None:
@@ -976,7 +985,18 @@ def run_portal(root: Path) -> Iterator[str]:
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{httpd.server_address[1]}"
+        # external probes are patched so a server test says the same thing on any
+        # machine: no launchctl, no lsof, and no ~/Library/Logs reaching in
+        with (
+            mock.patch.object(
+                health_domain, "run_argv", return_value=("", "not available")
+            ),
+            mock.patch.object(
+                health_domain, "LAUNCH_AGENTS", root / "no-launch-agents"
+            ),
+            mock.patch.object(logs_domain, "LIBRARY_LOGS", root / "no-library-logs"),
+        ):
+            yield f"http://127.0.0.1:{httpd.server_address[1]}"
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -1007,7 +1027,14 @@ class TestServer(unittest.TestCase):
                 self.assertIn("Hermes Portal", page)
                 self.assertIn("text/html", content_type)
 
-                for path in ("/skills", "/sessions", "/cron"):
+                for path in (
+                    "/skills",
+                    "/sessions",
+                    "/cron",
+                    "/usage",
+                    "/health",
+                    "/logs",
+                ):
                     status, _ctype, page = fetch(f"{base}{path}")
                     self.assertEqual(status, 200, path)
                     self.assertIn("read from:", page, path)
@@ -1039,7 +1066,8 @@ class TestServer(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertIn("application/json", ctype)
                 self.assertEqual(
-                    sorted(payload["counts"]), ["cron", "sessions", "skills"]
+                    sorted(payload["counts"]),
+                    ["cron", "health", "logs", "sessions", "skills", "usage"],
                 )
 
                 _status, _ctype, body = fetch(f"{base}/skills.json")
@@ -1054,6 +1082,25 @@ class TestServer(unittest.TestCase):
 
                 _status, _ctype, body = fetch(f"{base}/search.json?q=cron")
                 self.assertIn("query", json.loads(body))
+
+                _status, _ctype, body = fetch(f"{base}/usage.json")
+                usage_payload = json.loads(body)
+                self.assertEqual(usage_payload["domain"], "usage")
+                self.assertEqual(
+                    [c["key"] for c in usage_payload["collections"]],
+                    ["by-day", "by-model", "by-provider", "top-sessions"],
+                )
+
+                _status, _ctype, body = fetch(f"{base}/logs.json")
+                logs_payload = json.loads(body)
+                self.assertEqual(logs_payload["domain"], "logs")
+
+                _status, _ctype, body = fetch(f"{base}/health.json")
+                health_payload = json.loads(body)
+                self.assertEqual(
+                    [c["key"] for c in health_payload["collections"]],
+                    ["services", "heartbeats", "ports", "tickers", "storage"],
+                )
 
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     fetch(f"{base}/nope")

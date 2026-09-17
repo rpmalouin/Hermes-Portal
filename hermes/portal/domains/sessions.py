@@ -104,7 +104,7 @@ EMPTY = "\u2014"  # f-strings on 3.11 cannot contain escapes inside expressions
 USAGE_CAP = 40
 
 
-def _get(row: Any, key: str, default: str = "\u2014") -> Any:
+def _get(row: Any, key: str, default: Any = "\u2014") -> Any:
     """Read *key* from a sqlite3.Row, tolerating a column the schema lacks."""
     try:
         value = row[key]
@@ -371,166 +371,21 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _grouped_collection(
-        key: str, title: str, column: str, description: str
-    ) -> Collection:
-        """Group sessions by *column* with token and cost rollups."""
-        con, error = _open()
-        columns = select_columns(
-            con,
-            "sessions",
-            (column, "input_tokens", "output_tokens", "estimated_cost_usd"),
-        )
-        rolls = [
-            c
-            for c in ("input_tokens", "output_tokens", "estimated_cost_usd")
-            if c in columns
-        ]
-        sums = ", ".join(f"sum({c}) as {c}" for c in rolls)
-        rows, sql_error = query(
-            con,
-            f"select {column} as bucket, count(*) as sessions "
-            f"{', ' + sums if sums else ''}"
-            f" from sessions group by bucket order by sessions desc",
-        )
-        records = [
-            Record(
-                id=str(_get(row, "bucket", "unknown")),
-                title=str(_get(row, "bucket", "unknown")),
-                subtitle=f"{_number(_get(row, 'sessions'))} session(s)",
-                badges=(
-                    f"{_number(_get(row, 'sessions'))} sessions",
-                    _money(_get(row, "estimated_cost_usd", None)),
-                ),
-                links=(
-                    (
-                        f"/sessions?{'model' if column == 'model' else 'provider'}"
-                        f"={_get(row, 'bucket', '')}",
-                        "Matching sessions",
-                    ),
-                ),
-                fields=(
-                    (column, str(_get(row, "bucket", "unknown"))),
-                    ("sessions", _number(_get(row, "sessions"))),
-                    ("input tokens", _number(_get(row, "input_tokens", None))),
-                    ("output tokens", _number(_get(row, "output_tokens", None))),
-                    ("cost (estimated)", _money(_get(row, "estimated_cost_usd", None))),
-                ),
-            )
-            for row in rows
-        ]
-        notes = list(_notes(con, error))
-        if sql_error:
-            notes.append(sql_error)
-        _close(con)
-        return build_collection(
-            key,
-            title,
-            description,
-            f"distinct values of sessions.{column}",
-            records,
-            sources=_sources(),
-            notes=tuple(notes),
-            as_of=as_of(),
-        )
-
-    def _usage_collection() -> Collection:
-        """Per-model usage rollup from session_model_usage."""
-        con, error = _open()
-        columns = select_columns(con, "session_model_usage", USAGE_COLUMNS)
-        if "model" not in columns:
-            notes = _notes(con, error)
-            _close(con)
-            return build_collection(
-                "usage",
-                "Usage by model",
-                "Token and cost rollup per model.",
-                "distinct models in session_model_usage",
-                [],
-                sources=_sources(),
-                notes=notes + ("session_model_usage is absent from this database",),
-                as_of=as_of(),
-            )
-        sums = ", ".join(
-            f"sum({c}) as {c}"
-            for c in (
-                "api_call_count",
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-                "estimated_cost_usd",
-            )
-            if c in columns
-        )
-        order_clause = (
-            "estimated_cost_usd desc"
-            if "estimated_cost_usd" in columns
-            else "rows desc"
-        )
-        rows, sql_error = query(
-            con,
-            f"select model, count(*) as rows {', ' + sums if sums else ''} "
-            f"from session_model_usage group by model order by "
-            f"{order_clause}",
-        )
-        notes = list(_notes(con, error))
-        if sql_error:
-            notes.append(sql_error)
-        _close(con)
-        return build_collection(
-            "usage",
-            "Usage by model",
-            "Token and cost rollup per model, summed across sessions.",
-            "distinct models in session_model_usage",
-            [
-                Record(
-                    id=str(_get(row, "model")),
-                    title=str(_get(row, "model")),
-                    subtitle=f"{_number(_get(row, 'api_call_count'))} API calls",
-                    badges=(_money(_get(row, "estimated_cost_usd", None)),),
-                    fields=(
-                        ("model", str(_get(row, "model"))),
-                        ("usage rows", _number(_get(row, "rows"))),
-                        ("api calls", _number(_get(row, "api_call_count", None))),
-                        ("input tokens", _number(_get(row, "input_tokens", None))),
-                        ("output tokens", _number(_get(row, "output_tokens", None))),
-                        ("cache read", _number(_get(row, "cache_read_tokens", None))),
-                        ("cache write", _number(_get(row, "cache_write_tokens", None))),
-                        (
-                            "cost (estimated)",
-                            _money(_get(row, "estimated_cost_usd", None)),
-                        ),
-                    ),
-                )
-                for row in rows
-            ],
-            sources=_sources(),
-            notes=tuple(notes),
-            as_of=as_of(),
-        )
-
     def collections(filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
         """Drill-down collections for the sessions domain.
 
-        ``?model=<name>`` and ``?provider=<name>`` narrow the session index;
-        the grouped collections link straight into those filters.
+        ``?model=<name>`` and ``?provider=<name>`` narrow the session index; the
+        usage domain's rollups link straight into those filters.
+
+        The by-model, by-provider and usage rollups used to live here too.  They
+        now live only in the usage domain, so the same number is never computed in
+        two places; this page keeps the index and each session's own detail.
         """
         active = filters or {}
         return [
             _sessions_collection(
                 model=(active.get("model") or "").strip() or None,
                 provider=(active.get("provider") or "").strip() or None,
-            ),
-            _usage_collection(),
-            _grouped_collection(
-                "by-model", "Sessions by model", "model", "Which model ran which work."
-            ),
-            _grouped_collection(
-                "by-provider",
-                "Sessions by provider",
-                "billing_provider",
-                "Where the tokens were billed.",
             ),
         ]
 

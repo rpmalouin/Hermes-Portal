@@ -17,7 +17,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -163,6 +165,95 @@ def select_columns(
     """
     available = table_columns(con, table)
     return [column for column in wanted if column in available]
+
+
+_SCRUB_RE = re.compile(
+    r"(?i)(sk-[A-Za-z0-9_\-]{6,}"
+    r"|bearer\s+\S+"
+    r"|(api[_-]?key|token|secret|password|passwd)\s*[=:]\s*\S+)"
+)
+
+
+def scrub(text: str) -> str:
+    """Mask credential-shaped substrings before text reaches a page.
+
+    Logs, message bodies and job output can all contain a pasted key or a bearer
+    header.  The portal renders its sources verbatim, so every path that carries
+    free text runs it through here first.  This masks the shape, not the value: it
+    is a display guard, never a reason to trust a file.
+    """
+    return _SCRUB_RE.sub("<redacted>", text)
+
+
+def age_seconds(timestamp: float | str | None) -> float | None:
+    """Seconds since *timestamp* (Unix seconds or ISO-8601), or ``None``."""
+    if timestamp is None or timestamp == "":
+        return None
+    moment: dt.datetime
+    try:
+        moment = dt.datetime.fromtimestamp(float(timestamp), tz=dt.UTC)
+    except (TypeError, ValueError):
+        try:
+            moment = dt.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.UTC)
+    return (dt.datetime.now(dt.UTC) - moment).total_seconds()
+
+
+def run_argv(argv: Sequence[str], timeout: float = 15.0) -> tuple[str, str]:
+    """Run a read-only command and return ``(stdout, error)``.
+
+    argv is always a list: ``shell=True`` is never used anywhere in this project.
+    A failure comes back as an error string so a missing tool degrades one
+    collection instead of the page.
+    """
+    try:
+        completed = subprocess.run(
+            list(argv), capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", f"{' '.join(argv)} failed: {type(exc).__name__}: {exc}"
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()[:200]
+        return completed.stdout, f"{argv[0]} exited {completed.returncode}: {detail}"
+    return completed.stdout, ""
+
+
+def tail_text(path: Path, window_bytes: int = 200_000) -> tuple[str, bool, str]:
+    """Return the last *window_bytes* of a file, decoded.
+
+    Logs are read from the end only: a 5 MB gateway log must never be pulled into
+    memory in full just to show its most recent failure.
+
+    Returns:
+        ``(text, truncated, error)`` -- *truncated* says the file is longer than
+        the window that was read.
+    """
+    file_path = Path(path)
+    try:
+        size = file_path.stat().st_size
+    except OSError as exc:
+        return "", False, f"cannot stat {file_path}: {exc}"
+    try:
+        with file_path.open("rb") as handle:
+            truncated = size > window_bytes
+            if truncated:
+                handle.seek(size - window_bytes)
+            raw = handle.read(window_bytes)
+    except OSError as exc:
+        return "", False, f"cannot read {file_path}: {exc}"
+    return raw.decode("utf-8", errors="replace"), truncated, ""
+
+
+def glob_files(root: Path, patterns: Sequence[str]) -> list[Path]:
+    """Return the files under *root* matching any of *patterns*, biggest first."""
+    found: list[Path] = []
+    for pattern in patterns:
+        found.extend(path for path in Path(root).glob(pattern) if path.is_file())
+    unique = {path.resolve(): path for path in found}
+    return sorted(unique.values(), key=lambda path: -path.stat().st_size)
 
 
 def read_json(path: Path) -> tuple[Any | None, str]:

@@ -34,13 +34,17 @@ hermes/
     domains/         one adapter per domain
       __init__.py    default_registry()
       skills.py      4 roots, frontmatter, references
-      sessions.py    state.db sessions, messages, per-model usage
+      sessions.py    state.db sessions and messages
       cron.py        jobs.json, executions.db, output reports
+      usage.py       cost and token rollups, by day/model/provider
+      health.py      launchd services, heartbeats, ports, tickers, storage
+      logs.py        log tails, error signatures, credential scrubbing
 tests/
   __init__.py
   test_smoke.py      43 tests, the framework (manifest, loader, registry, executor)
   test_skill_trees.py 23 tests, the skill data layer on a fake Hermes tree
   test_portal.py     59 tests, the portal incl. the skills gallery
+  test_portal_domains.py 31 tests, usage/health/logs + whole-registry invariants
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -310,13 +314,36 @@ which is now free and stays free) and not 9119 (Hermes' own dashboard). It binds
 localhost only, and `--port 0` picks a free port when something else already holds
 it.
 
-P0 ships three domains, each with collections, drill-down and search:
+Six domains, each with collections, drill-down and search:
 
-| Domain | Source | Reads | Count shown as |
+| Domain | Source | Reads | Headline |
 | --- | --- | --- | --- |
-| skills | 4 skill roots (shared + 3 profiles) | `SKILL.md` trees, frontmatter, `references/` | 157 unique names — plus 421 files, 55 boxes, 4 roots alongside |
-| sessions | `state.db` | `sessions`, `messages`, `session_model_usage` | 91 sessions — plus 9,504 messages, 4 providers |
+| skills | 4 skill roots (shared + 3 profiles) | `SKILL.md` trees, frontmatter, `references/` | 158 unique names — plus 422 files, 55 boxes, 4 roots |
+| sessions | `state.db` | `sessions`, `messages` | 91 sessions — plus 9,504 messages |
 | cron | `cron/jobs.json`, `cron/executions.db`, `cron/output/` | jobs, runs, incidents, reports | 10 jobs — plus 1,000 executions |
+| usage | `state.db` | `sessions`, `session_model_usage` | 87 priced sessions — $16.68 estimated, 30.0M in / 2.6M out tokens, 4,292 calls |
+| health | `launchctl`, LaunchAgents plists, `state.db`, `lsof`, `cron/ticker_*`, file sizes | services, heartbeats, ports, tickers, storage | the services found — plus running/stale counts |
+| logs | `$HERMES_HOME/logs`, `~/Library/Logs` | the last 200 KB of each file, error signatures | log files in scope — plus distinct signatures |
+
+P0 was skills/sessions/cron; P1 added usage, health and logs.
+
+**Usage** is the single home for cost and token rollups: totals, by day, by model,
+by provider and the most expensive sessions (each linking into the sessions view that
+filters to it). The sessions domain keeps the index and each session's own usage --
+one number, one place, so the two cannot drift.
+
+**Health** answers "is it alive right now" rather than "is it configured": each
+service's plist is joined with live `launchctl` state and a TCP probe of the port it
+declares, so you get `running · port 9119: listening · last exit -15` instead of a
+guess. It also carries the gateway's heartbeats, the cron ticker stamps, every
+listening port, and the size of the stores Hermes grows (state.db, its WAL,
+snapshots, backups, the 2.3 GB code graph).
+
+**Logs** reads only the end of each file (200 KB) and normalises error lines into
+signatures -- timestamps, levels, ids and numbers stripped -- which is what turns
+"834 error lines" into `MCP server 'obsidian' failed after N reconnection attempts
+x2283`. Every line that reaches a page is **scrubbed** first, because logs are where
+a pasted key or a bearer header ends up.
 
 Routes: `/` index, `/<domain>` collections, `/<domain>/<id>` a record and the
 collections behind it (a session's messages, a cron job's runs and reports), and
@@ -339,6 +366,16 @@ domain, and every `.json` variant returns the same data — `/index.json`,
 * **Per-profile stores are disclosed, not merged.** Profiles keep their own
   `state.db` and `cron/executions.db`; the sessions page says so (2 sessions in
   the running profile, 6 in another) instead of quietly reading one of them.
+* **Log text is scrubbed before it is rendered.** `sk-…`, `Bearer …`, `api_key=…`,
+  `token=` and `password:` shapes become `<redacted>` on every path that shows free
+  text, and signatures are built from scrubbed lines because a signature becomes a
+  record *title* — masking only the body would still leak.
+* **A count is the size of the set it describes.** Three P1 overviews shipped
+  counting a five-record sample while meaning "32 files" or "87 sessions"; a test now
+  asserts, for every collection in a fake registry, that the count equals the records
+  shown when nothing is capped, and never falls below them.
+* **Anything outside the process is patched in tests.** `launchctl`, `lsof` and
+  `~/Library/Logs` are mocked, so the suite says the same thing on any machine.
 
 Domains and views are separate: `hermes/portal/domains/<domain>.py` is one adapter
 (Domain -> Collection -> Record), `hermes/portal/render.py` is one generic page
@@ -350,7 +387,7 @@ through its own MCP tools.
 
 ```sh
 cd <project-root>
-python3 -m unittest discover -s tests -t .   # 125 tests, ~3.5s
+python3 -m unittest discover -s tests -t .   # 156 tests, ~3.6s
 python3 -m unittest tests.test_smoke         # same suite
 python3 tests/test_smoke.py                  # works directly too
 

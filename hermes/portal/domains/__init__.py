@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..model import DomainRegistry
 from ..sources import hermes_root
-from . import cron, sessions, skills
+from . import cron, health, logs, sessions, skills, usage
 
 __all__ = ["cron", "default_registry", "sessions", "skills"]
 
@@ -26,7 +26,10 @@ def default_registry(
     profile: str | None = None,
     all_profiles: bool = True,
 ) -> DomainRegistry:
-    """Build the P0 registry: skills, sessions and cron.
+    """Build the registry: skills, sessions, cron, usage, health and logs.
+
+    P0 was skills/sessions/cron; P1 adds usage (cost rollups), health (services,
+    heartbeats, ports, tickers, storage) and logs (tails and error signatures).
 
     Args:
         hermes_home: Hermes home or profile directory; ``None`` resolves
@@ -50,5 +53,8 @@ def default_registry(
         )
     )
     registry.register(sessions.build_domain(hermes_home=hermes_home))
-    registry.register(cron.build_domain(hermes_home=hermes_home))
+    registry.register(cron.build_domain(hermes_home=root))
+    registry.register(usage.build_domain(hermes_home=root))
+    registry.register(health.build_domain(hermes_home=root))
+    registry.register(logs.build_domain(root))
     return registry

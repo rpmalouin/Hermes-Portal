@@ -81,7 +81,7 @@ def _close(con: Any) -> None:
         con.close()
 
 
-def _get(row: Any, key: str, default: str = "\u2014") -> Any:
+def _get(row: Any, key: str, default: Any = "\u2014") -> Any:
     """Read *key* from a sqlite3.Row, tolerating a column the schema lacks."""
     try:
         value = row[key]

@@ -107,6 +107,7 @@ class Collection:
     as_of: str = ""
     display: str = "rows"
     picker: Picker | None = None
+    metrics: tuple[DETAIL_ROW, ...] = ()
 
     @property
     def shown(self) -> int:
@@ -133,6 +134,7 @@ def build_collection(
     as_of: str = "",
     display: str = "rows",
     picker: Picker | None = None,
+    metrics: Sequence[DETAIL_ROW] = (),
 ) -> Collection:
     """Assemble a :class:`Collection`, applying an optional display *cap*.
 
@@ -149,6 +151,8 @@ def build_collection(
         as_of: ISO-8601 UTC stamp for the read.
         display: How the records read best: ``"rows"`` (default) or ``"cards"``.
         picker: Optional dropdown for narrowing this collection.
+        metrics: Labelled headline values (``("Estimated cost", "$1.2345")``).
+            Counts stay integers; money, durations and sizes belong here.
 
     Returns:
         A :class:`Collection`; ``truncated`` is derived, never passed in.
@@ -166,6 +170,7 @@ def build_collection(
         as_of=as_of,
         display=display,
         picker=picker,
+        metrics=tuple(metrics),
     )
 
 
