@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..model import DomainRegistry
 from ..sources import hermes_root
-from . import cron, health, logs, sessions, skills, usage
+from . import cron, graph, health, logs, sessions, skills, usage, vault
 
 __all__ = ["cron", "default_registry", "sessions", "skills"]
 
@@ -25,8 +25,10 @@ def default_registry(
     hermes_home: Path | None = None,
     profile: str | None = None,
     all_profiles: bool = True,
+    vault_root: Path | None = None,
+    graph_db: Path | None = None,
 ) -> DomainRegistry:
-    """Build the registry: skills, sessions, cron, usage, health and logs.
+    """Build the registry: skills, sessions, cron, usage, health, logs, vault and graph.
 
     P0 was skills/sessions/cron; P1 adds usage (cost rollups), health (services,
     heartbeats, ports, tickers, storage) and logs (tails and error signatures).
@@ -39,6 +41,10 @@ def default_registry(
         all_profiles: Read every profile's skills too (default).  The portal is
             meant to show *everything* Hermes has, so per-profile trees are in
             by default and each one is listed as its own source.
+        vault_root: Obsidian vault to index; defaults to the documented path in
+            :mod:`hermes.portal.domains.vault`.
+        graph_db: Code graph database; defaults to
+            ``<hermes home>/.code-review-graph/graph.db``.
 
     Returns:
         A registry with one domain per adapter.  The skills domain snapshots the
@@ -57,4 +63,6 @@ def default_registry(
     registry.register(usage.build_domain(hermes_home=root))
     registry.register(health.build_domain(hermes_home=root))
     registry.register(logs.build_domain(root))
+    registry.register(vault.build_domain(vault_root))
+    registry.register(graph.build_domain(hermes_home=root, graph_db=graph_db))
     return registry

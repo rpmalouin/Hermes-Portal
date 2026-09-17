@@ -39,7 +39,10 @@ from hermes.portal.model import Domain, count_map  # noqa: E402
 FAKE_KEY = "sk-ABCDEF1234567890"
 FAKE_BEARER = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6"
 FAKE_TOKEN = "api_key=SUPERSECRET123"
-NOW = 1789674022.0
+# a *live* clock: every stamp below is relative to it, so "30s ago is fresh" holds
+# whenever the suite runs.  Frozen at a literal, the fresh row aged past the 10-minute
+# staleness threshold and the health tests flipped from 1 stale to 2 on their own.
+NOW = time.time()
 
 
 def make_state_db(path: Path) -> None:
@@ -529,10 +532,10 @@ class TestRegistryInvariants(BaseP1):
             self.addCleanup(patcher.stop)
         self.registry = default_registry(hermes_home=self.root)
 
-    def test_all_six_domains_are_registered(self) -> None:
+    def test_all_domains_are_registered(self) -> None:
         self.assertEqual(
             self.registry.keys(),
-            ["cron", "health", "logs", "sessions", "skills", "usage"],
+            ["cron", "graph", "health", "logs", "sessions", "skills", "usage", "vault"],
         )
 
     def test_every_collection_count_matches_its_records(self) -> None:

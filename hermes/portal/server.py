@@ -261,6 +261,8 @@ def serve(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     registry: DomainRegistry | None = None,
+    vault_root: Path | None = None,
+    graph_db: Path | None = None,
 ) -> int:
     """Build the registry (if needed) and serve the portal until interrupted.
 
@@ -273,6 +275,8 @@ def serve(
         port: TCP port (0 picks a free one).
         registry: Pre-built registry; one is built here when omitted, so a
             caller that already has one does not pay for a second walk.
+        vault_root: Obsidian vault to index (default documented in the vault domain).
+        graph_db: Code graph database; default ``.code-review-graph/graph.db``.
 
     Returns:
         ``0`` on a clean shutdown.
@@ -280,7 +284,11 @@ def serve(
     built_at = as_of()
     if registry is None:
         registry = default_registry(
-            hermes_home=hermes_home, profile=profile, all_profiles=all_profiles
+            hermes_home=hermes_home,
+            profile=profile,
+            all_profiles=all_profiles,
+            vault_root=vault_root,
+            graph_db=graph_db,
         )
     PortalHandler.registry = registry
     PortalHandler.built_at = built_at
@@ -323,6 +331,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="read every profile's skills too (default: yes)",
     )
     parser.add_argument(
+        "--graph-db",
+        default=None,
+        help="code graph database (default: <hermes home>/.code-review-graph/graph.db)",
+    )
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="Obsidian vault to index (default: /Volumes/Data/MyObsidian)",
+    )
+    parser.add_argument(
         "--list", action="store_true", help="print the registry summary and exit"
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help="interface to bind")
@@ -345,6 +364,8 @@ def main(argv: list[str] | None = None) -> int:
             hermes_home=args.hermes_home,
             profile=args.profile,
             all_profiles=args.all_profiles,
+            vault_root=args.vault,
+            graph_db=args.graph_db,
         )
     except OSError as exc:
         print(f"error: cannot build the portal: {exc}", file=sys.stderr)
@@ -361,4 +382,6 @@ def main(argv: list[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         registry=registry,
+        vault_root=args.vault,
+        graph_db=args.graph_db,
     )

@@ -20,7 +20,9 @@ import os
 import re
 import sqlite3
 import subprocess
-from collections.abc import Sequence
+import threading
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +169,52 @@ def select_columns(
     return [column for column in wanted if column in available]
 
 
+class Cache:
+    """A tiny TTL cache for the few reads too slow to run on every request.
+
+    Values are returned with the moment they were computed, so a page can say
+    *when* a number was true instead of implying it is true now.  A miss computes
+    once under a lock, so concurrent requests do not each pay the price.
+    """
+
+    def __init__(self) -> None:
+        """Create an empty cache."""
+        self._lock = threading.Lock()
+        self._values: dict[str, tuple[float, Any, str]] = {}
+
+    def peek(self, key: str, ttl: float) -> tuple[Any | None, str]:
+        """Return ``(value, computed_at)`` without computing, or ``(None, "")``."""
+        now = time.monotonic()
+        with self._lock:
+            cached = self._values.get(key)
+            if cached is not None and now - cached[0] < ttl:
+                return cached[1], cached[2]
+            return None, ""
+
+    def get(
+        self,
+        key: str,
+        ttl: float,
+        producer: Callable[[], Any],
+    ) -> tuple[Any, str]:
+        """Return ``(value, computed_at)`` for *key*, computing when stale.
+
+        Args:
+            key: Cache key.
+            ttl: Seconds a value stays valid.
+            producer: Called with no arguments to compute the value.
+        """
+        now = time.monotonic()
+        with self._lock:
+            cached = self._values.get(key)
+            if cached is not None and now - cached[0] < ttl:
+                return cached[1], cached[2]
+            value = producer()
+            stamp = as_of()
+            self._values[key] = (now, value, stamp)
+            return value, stamp
+
+
 _SCRUB_RE = re.compile(
     r"(?i)(sk-[A-Za-z0-9_\-]{6,}"
     r"|bearer\s+\S+"
@@ -301,13 +349,19 @@ def fmt_time(timestamp: float | str | None) -> str:
 
 
 def fmt_ago(timestamp: float | str | None) -> str:
-    """Format a Unix timestamp as a coarse age such as ``3h ago``."""
+    """Format a Unix timestamp or an ISO-8601 string as a coarse age like ``3h ago``."""
     if timestamp is None or timestamp == "":
-        return "—"
+        return "\u2014"
+    moment: dt.datetime
     try:
         moment = dt.datetime.fromtimestamp(float(timestamp), tz=dt.UTC)
     except (TypeError, ValueError):
-        return "—"
+        try:
+            moment = dt.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        except ValueError:
+            return "\u2014"
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=dt.UTC)
     seconds = (dt.datetime.now(dt.UTC) - moment).total_seconds()
     if seconds < 0:
         return "in the future"

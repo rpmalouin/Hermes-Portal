@@ -1067,7 +1067,16 @@ class TestServer(unittest.TestCase):
                 self.assertIn("application/json", ctype)
                 self.assertEqual(
                     sorted(payload["counts"]),
-                    ["cron", "health", "logs", "sessions", "skills", "usage"],
+                    [
+                        "cron",
+                        "graph",
+                        "health",
+                        "logs",
+                        "sessions",
+                        "skills",
+                        "usage",
+                        "vault",
+                    ],
                 )
 
                 _status, _ctype, body = fetch(f"{base}/skills.json")

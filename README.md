@@ -39,12 +39,15 @@ hermes/
       usage.py       cost and token rollups, by day/model/provider
       health.py      launchd services, heartbeats, ports, tickers, storage
       logs.py        log tails, error signatures, credential scrubbing
+      vault.py       Obsidian notes: backlinks, tags, tasks, the Kanban board
+      graph.py       the code graph: communities, risk, callers, flows
 tests/
   __init__.py
   test_smoke.py      43 tests, the framework (manifest, loader, registry, executor)
   test_skill_trees.py 23 tests, the skill data layer on a fake Hermes tree
   test_portal.py     59 tests, the portal incl. the skills gallery
   test_portal_domains.py 31 tests, usage/health/logs + whole-registry invariants
+  test_portal_heavy.py 35 tests, the vault and the code graph
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -314,7 +317,7 @@ which is now free and stays free) and not 9119 (Hermes' own dashboard). It binds
 localhost only, and `--port 0` picks a free port when something else already holds
 it.
 
-Six domains, each with collections, drill-down and search:
+Eight domains, each with collections, drill-down and search:
 
 | Domain | Source | Reads | Headline |
 | --- | --- | --- | --- |
@@ -324,8 +327,31 @@ Six domains, each with collections, drill-down and search:
 | usage | `state.db` | `sessions`, `session_model_usage` | 87 priced sessions — $16.68 estimated, 30.0M in / 2.6M out tokens, 4,292 calls |
 | health | `launchctl`, LaunchAgents plists, `state.db`, `lsof`, `cron/ticker_*`, file sizes | services, heartbeats, ports, tickers, storage | the services found — plus running/stale counts |
 | logs | `$HERMES_HOME/logs`, `~/Library/Logs` | the last 200 KB of each file, error signatures | log files in scope — plus distinct signatures |
+| vault | the Obsidian vault (`--vault`, default `/Volumes/Data/MyObsidian`) | all notes indexed in memory, frontmatter, `[[wiki links]]`, checkboxes, the Kanban board | 762 notes — plus 1,116 links, 141 tags, 76 open items |
+| graph | `.code-review-graph/graph.db` (`--graph-db`) | precomputed tables: communities, risk, flows; FTS for search | 38 communities — plus 170,971 nodes, 1.5M edges (cached count) |
 
-P0 was skills/sessions/cron; P1 added usage, health and logs.
+P0 was skills/sessions/cron; P1 added usage, health and logs; P2 the two heavy planes,
+the vault and the code graph.
+
+**Vault.** 762 notes totalling ~3 MB is small enough to index in one pass and keep in
+memory, which buys the thing a folder listing cannot: **backlinks**. Open any note and
+you see its frontmatter, its text, what it links to (and whether each target exists) and
+what links back to it. Tags come from frontmatter; open work comes from two conventions,
+because the vault has two — a checkbox line in an ordinary note is open while unchecked,
+and a **Kanban card is open while its `Status` field is not done**, since the board's
+checkboxes are not maintained. Reading the box alone reported 87 finished cards as open.
+
+**Code graph.** A deliberately narrow adapter over a 2.5 GB store, shaped by two rules.
+Prefer what the builders already computed: `risk_index`, `flows` and
+`community_summaries` answer in milliseconds, whereas recomputing degrees or language
+histograms with group-bys over 1.5M edges costs 2–4 seconds per query, so those are not
+on the page at all. And count what is cheap, cache what is not: `count(*)` on nodes is
+instant, on edges it takes 3.3 seconds, so it is computed once in a **background thread**
+and the metric says `counting…` until it lands, stamped with when it was taken. The
+graph's 34 MCP tools remain its interactive interface — semantic search, refactor
+previews and impact analysis are theirs; what the portal adds is a stable, linkable read
+of what the store contains. A graph node's page shows its edges out and in, its flow
+memberships, its risk row and its community.
 
 **Usage** is the single home for cost and token rollups: totals, by day, by model,
 by provider and the most expensive sessions (each linking into the sessions view that
