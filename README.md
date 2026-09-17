@@ -7,6 +7,8 @@ Portal** — a read-only, ten-domain drill-down over everything the running Herm
 keeps — and the **skill framework** it grew out of, for discovering, registering and
 running *skills* (self-contained Python programs described by a `skill.json` manifest).
 
+No pull requests, you are free to fork it, use it, enhance it on your own.
+
 [Why it exists](#why-this-project) is the next section; [how to run
 it](#how-to-use-this) is the one after that. The layout:
 
