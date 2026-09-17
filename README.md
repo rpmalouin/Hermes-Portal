@@ -29,6 +29,7 @@ hermes/
     model.py         Domain / Collection / Record / Count (counts carry rules)
     sources.py       read-only SQLite, root resolution, formatting, a TTL cache
     fts.py           message search: FTS5 queries, excerpts around the hit, fallbacks
+    domains/base.py  what a domain is built from: one cached snapshot, one wiring
     state.py         favourites: the portal's own state file and the only writer
     taxonomy.py      the curated grouping behind the box tiles (presentation only)
     render.py        one generic page shape for every domain
@@ -376,6 +377,22 @@ That work also uncovered a bug in every domain: `Record.links` were built as
 as its text and the human label as its href — `<a href="Its folder">/vault?folder=Homelab</a>`,
 which navigated nowhere. The renderer matches the documented order now, and a test pins the
 rendered markup.
+
+**Domains are classes now, one at a time.** Each domain used to be a single
+`build_domain` function holding a dozen nested closures over a `state` dict, and the
+code-review graph priced that shape: the factory in `memory.py` reached **793 lines**,
+`graph.py`'s 567, and most of the graph's "untested hotspots" were closures that no test
+could call by name. `domains/base.py` now holds a `SnapshotDomain`: the snapshot is an
+attribute read once behind a lock, helpers are named methods, and the plumbing to a
+`Domain` is written once. `build_domain(hermes_home=...)` stays each module's entry point,
+so this converts one domain per phase. `memory.py` is the first: 1,323 lines became
+**1,060** for the domain plus **320** for a new `memory_files.py` that owns the file
+format and the history layer, and its `build_domain` is four lines.
+
+The conversion found a real bug in itself: those helpers take the snapshot they are
+*handed*, because that is how a filtered view reaches them, and the first cut had them
+fetch `self.snapshot()` instead — so `?profile=default` silently rendered every profile.
+A test now pins that contract by calling the builder directly with a narrowed snapshot.
 
 **Memory history.** "What did memory say last week" is answerable, and the interesting
 part is *which* containers hold the answer. The per-profile `state-snapshots/*-pre-update/`

@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes.portal import server  # noqa: E402
 from hermes.portal.domains import memory as memory_domain  # noqa: E402
+from hermes.portal.domains import memory_files  # noqa: E402
 from hermes.portal.model import DomainRegistry  # noqa: E402
 
 SEPARATOR = "\u00a7"
@@ -347,6 +348,159 @@ class MemoryDomainTestCase(unittest.TestCase):
         groups = self.registry.search("dockerVM", 5)
         self.assertIn("memory", groups)
         self.assertTrue(groups["memory"])
+
+
+class PrimitivesTestCase(unittest.TestCase):
+    """The memory primitives, called by name.
+
+    These exist because the code-review graph flagged them as untested: the domain
+    tests exercise them *through* a registry, which leaves no edge from the symbol to a
+    test in the graph.  Calling each one directly is both a real test and the reference
+    the graph needs to see.
+    """
+
+    def test_entry_key_chars_and_title(self) -> None:
+        entry = memory_files.MemoryEntry(
+            profile="p",
+            kind="memory",
+            file_key="p/memory",
+            index=3,
+            text="First line here.\nSecond line.",
+        )
+        self.assertEqual(entry.key, "p/memory/3")
+        self.assertEqual(entry.chars, len(entry.text))
+        self.assertEqual(entry.title, "First line here.")
+        empty = memory_files.MemoryEntry(
+            profile="p", kind="memory", file_key="p/memory", index=1, text="   \n\n"
+        )
+        self.assertEqual(empty.title, "(empty entry)")
+
+    def test_file_budget_properties_without_a_limit(self) -> None:
+        path = Path("/tmp/does-not-matter/MEMORY.md")
+        memory_file = memory_domain.MemoryFile(
+            profile="p", kind="memory", path=path, text="abc", limit=None
+        )
+        self.assertEqual(memory_file.label, "MEMORY.md")
+        self.assertEqual(memory_file.chars, 3)
+        self.assertIsNone(memory_file.percent)
+        self.assertIsNone(memory_file.free)
+        self.assertFalse(memory_file.at_cap)
+        self.assertEqual(memory_file.key, "p/memory")
+
+    def test_file_budget_properties_with_a_limit(self) -> None:
+        path = Path("/tmp/does-not-matter/MEMORY.md")
+        memory_file = memory_domain.MemoryFile(
+            profile="p", kind="user", path=path, text="abcde", limit=10
+        )
+        self.assertEqual(memory_file.percent, 50.0)
+        self.assertEqual(memory_file.free, 5)
+        self.assertFalse(memory_file.at_cap)
+        over = memory_domain.MemoryFile(
+            profile="p", kind="user", path=path, text="abcdefghijk", limit=10
+        )
+        self.assertTrue(over.at_cap)
+        self.assertEqual(over.free, -1)
+
+    def test_archive_copy_label_and_chars(self) -> None:
+        copy = memory_files.ArchiveCopy(
+            key="history/x/p/user",
+            label="x",
+            when="2026-08-25",
+            profile="p",
+            kind="user",
+            source="archive x.zip",
+            path=Path("/tmp/x.zip"),
+            member="memories/USER.md",
+            text="1234",
+        )
+        self.assertEqual(copy.label_text, "USER.md")
+        self.assertEqual(copy.chars, 4)
+
+    def test_profile_is_derived_from_the_member_path(self) -> None:
+        self.assertEqual(memory_files._profile_in("memories/MEMORY.md"), "default")
+        self.assertEqual(
+            memory_files._profile_in("profiles/purechat/memories/MEMORY.md"), "purechat"
+        )
+        self.assertEqual(memory_files._profile_in("some/prefix/USER.md"), "default")
+
+    def test_entries_are_split_with_positions(self) -> None:
+        text = f"one{memory_files.ENTRY_SEPARATOR}two{memory_files.ENTRY_SEPARATOR}\n\n"
+        entries = memory_files._entries_for("p", "memory", text)
+        self.assertEqual([entry.text for entry in entries], ["one", "two"])
+        self.assertEqual([entry.index for entry in entries], [1, 2])
+        self.assertEqual(memory_files._entries_for("p", "memory", ""), ())
+
+
+class SnapshotContractTestCase(unittest.TestCase):
+    """The class-based domain: one snapshot, cached, and builders that honour it.
+
+    The filter regression this pins: after the conversion from closures to methods, the
+    collection builders called ``self.snapshot()`` instead of using the snapshot they
+    were handed, so a *filtered* view silently rendered the unfiltered one.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = make_memory_root(Path(self._tmp.name), config=DEFAULT_CONFIG)
+        # the class itself, which is the point of the conversion: it can be named
+        self.domain = memory_domain.MemoryDomain(hermes_home=self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_snapshot_is_read_once(self) -> None:
+        self.assertIsInstance(self.domain, memory_domain.MemoryDomain)
+        first = self.domain.snapshot()
+        self.assertIs(first, self.domain.snapshot())
+        self.domain.forget()
+        self.assertIsNot(first, self.domain.snapshot())
+
+    def test_read_gathers_files_limits_and_history(self) -> None:
+        snapshot = self.domain.read()
+        self.assertEqual(len(snapshot.files), 3)
+        self.assertEqual(snapshot.limits["memory"], 2200)
+        self.assertEqual(snapshot.locks, 1)
+        self.assertEqual(snapshot.by_key()["default/memory"].chars, len(MEMORY_TEXT))
+
+    def test_narrowing_a_snapshot_keeps_the_history(self) -> None:
+        """The filtered view lost its archived copies when this was rebuilt by hand."""
+        snapshot = self.domain.snapshot()
+        narrowed = snapshot.narrowed(
+            tuple(item for item in snapshot.files if item.profile == "default")
+        )
+        self.assertEqual(len(narrowed.files), 2)
+        self.assertEqual(narrowed.history, snapshot.history)
+        self.assertEqual(narrowed.history_notes, snapshot.history_notes)
+        self.assertEqual(narrowed.history_scanned, snapshot.history_scanned)
+
+    def test_a_collection_builder_honours_the_snapshot_it_is_given(self) -> None:
+        snapshot = self.domain.snapshot()
+        everything = self.domain._files_collection(snapshot, "")
+        self.assertEqual(everything.count.value, 3)
+        narrowed = snapshot.narrowed(
+            tuple(item for item in snapshot.files if item.profile == "default")
+        )
+        only_default = self.domain._files_collection(narrowed, "default")
+        self.assertEqual(only_default.count.value, 2)
+        self.assertEqual(only_default.picker.selected, "default")
+        self.assertEqual(
+            [record.title for record in only_default.records],
+            sorted(record.title for record in only_default.records),
+        )
+
+    def test_build_domain_still_returns_a_wired_domain(self) -> None:
+        """The registry's contract is unchanged by the conversion."""
+        domain = memory_domain.build_domain(hermes_home=self.root)
+        self.assertEqual(domain.key, "memory")
+        for name in ("overview", "collections", "detail", "search", "detail_sections"):
+            self.assertTrue(callable(getattr(domain, name)), name)
+        # "nothing at all here" would match on "all"; use a word that is not there.
+        # (A domain may return a list or a tuple; the registry wraps either.)
+        self.assertFalse(domain.search("zzzznope", 5))
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":

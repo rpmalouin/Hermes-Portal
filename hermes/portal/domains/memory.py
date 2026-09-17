@@ -1,9 +1,9 @@
 """Memory domain: what the agent has written down about itself and its user.
 
 Hermes keeps a pair of files per profile -- ``MEMORY.md`` (the agent's own notes) and
-``USER.md`` (who it is working with).  Entries are separated by a section sign, and
-each file is capped by a character budget that ``config.yaml`` names:
-``memory_char_limit`` and ``user_char_limit``.
+``USER.md`` (who it is working with).  Entries are separated by a section sign, and each
+file is capped by a character budget that ``config.yaml`` names: ``memory_char_limit``
+and ``user_char_limit``.
 
 The budget is why this domain exists.  A file sitting on its limit cannot take another
 entry, so the useful question is not only "what does memory say" but "which file is
@@ -11,24 +11,29 @@ full".  Usage is computed against the real limit read from the config, and when 
 config does not name one this reports characters and says so rather than inventing a
 percentage.
 
-Read-only, like every other source: these files belong to the agent and are the one
-thing here that *is* routinely edited -- by Hermes, not by the portal.  Two details
-that would otherwise mislead:
+Read-only, like every other source: these files belong to the agent, and they are the
+one thing here that *is* routinely edited -- by Hermes, not by the portal.  Three
+details that would otherwise mislead:
 
 * ``*.lock`` files sit beside the memories and are skipped, then counted, so a reader
-  knows they were seen and not forgotten.
-* a running session loads its copy of memory when it starts, so the file on disk can
-  be newer than what an agent is thinking with.  The page says so.
+  knows they were seen and not forgotten;
+* a running session loads its copy of memory when it starts, so the file on disk can be
+  newer than what an agent is thinking with, and the page says so;
+* history lives in :mod:`hermes.portal.domains.memory_files` -- this module serves the
+  files as they are, that one knows what they were.
+
+This is the first domain written as a class (:class:`MemoryDomain` over
+:class:`~hermes.portal.domains.base.SnapshotDomain`) rather than as a factory full of
+closures, because the graph measured the old shape at 793 lines with helpers that
+nothing could call by name.
 """
 
 from __future__ import annotations
 
-import json
 import re
-import zipfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ...core import skill_trees
@@ -50,50 +55,22 @@ from ..sources import (
     snippet,
     truncate,
 )
+from .base import SnapshotDomain
+from .memory_files import (
+    ENTRY_SEPARATOR,
+    KIND_LABELS,
+    KINDS,
+    ArchiveCopy,
+    MemoryEntry,
+    collect_history,
+    delta_against,
+)
 
-KINDS = ("memory", "user")
-KIND_LABELS = {"memory": "MEMORY.md", "user": "USER.md"}
 LIMIT_KEYS = {"memory": "memory_char_limit", "user": "user_char_limit"}
-ENTRY_SEPARATOR = "\u00a7"
-OVERLAP_FLOOR = 0.4
-MEMBER_RE = re.compile(r"(?:^|/)(MEMORY|USER)\.md$")
-MEMBER_KIND = {"MEMORY": "memory", "USER": "user"}
-MAX_MEMBER_BYTES = 1_048_576
-SNAPSHOT_MANIFEST = "manifest.json"
 ENTRIES_CAP = 400
 BODY_CAP = 8000
 TITLE_CHARS = 92
 NEIGHBOURS = 12
-
-
-@dataclass(frozen=True)
-class MemoryEntry:
-    """One entry: the unit the agent writes and the limit counts."""
-
-    profile: str
-    kind: str
-    file_key: str
-    index: int
-    text: str
-
-    @property
-    def key(self) -> str:
-        """Stable id for this entry, used in URLs."""
-        return f"{self.file_key}/{self.index}"
-
-    @property
-    def chars(self) -> int:
-        """Characters in the entry, separators excluded."""
-        return len(self.text)
-
-    @property
-    def title(self) -> str:
-        """The entry's first line, as the list shows it."""
-        for line in self.text.splitlines():
-            cleaned = line.strip()
-            if cleaned:
-                return truncate(cleaned, TITLE_CHARS)
-        return "(empty entry)"
 
 
 @dataclass(frozen=True)
@@ -145,194 +122,6 @@ class MemoryFile:
 
 
 @dataclass(frozen=True)
-class ArchiveCopy:
-    """One older copy of a memory file, from an archive or a snapshot directory."""
-
-    key: str
-    label: str
-    when: str
-    profile: str
-    kind: str
-    source: str
-    path: Path
-    member: str
-    text: str
-    entries: tuple[MemoryEntry, ...] = ()
-    error: str = ""
-
-    @property
-    def label_text(self) -> str:
-        """``MEMORY.md``-style name for the archived file."""
-        return KIND_LABELS.get(self.kind, self.kind)
-
-    @property
-    def chars(self) -> int:
-        """Characters in the archived copy."""
-        return len(self.text)
-
-
-def _profile_in(member: str) -> str:
-    """The profile an archived member belongs to, from its path."""
-    parts = [part for part in member.split("/") if part]
-    if "memories" in parts:
-        index = parts.index("memories")
-        if index >= 2 and parts[index - 2] == "profiles":
-            return parts[index - 1]
-    return "default"
-
-
-def _entries_for(profile: str, kind: str, text: str) -> tuple[MemoryEntry, ...]:
-    """Split archived text into entries the same way the live files are split."""
-    file_key = f"{profile}/{kind}"
-    entries: list[MemoryEntry] = []
-    for position, chunk in enumerate(text.split(ENTRY_SEPARATOR), start=1):
-        cleaned = chunk.strip()
-        if not cleaned:
-            continue
-        entries.append(
-            MemoryEntry(
-                profile=profile,
-                kind=kind,
-                file_key=file_key,
-                index=position,
-                text=cleaned,
-            )
-        )
-    return tuple(entries)
-
-
-def _read_zip(path: Path, root: Path) -> tuple[list[ArchiveCopy], str]:
-    """Read only the memory members of an archive; nothing is extracted to disk."""
-    copies: list[ArchiveCopy] = []
-    label = path.stem
-    try:
-        with zipfile.ZipFile(path) as archive:
-            for member in archive.namelist():
-                match = MEMBER_RE.search(member)
-                if not match:
-                    continue
-                kind = MEMBER_KIND[match.group(1)]
-                profile = _profile_in(member)
-                info = archive.getinfo(member)
-                if info.file_size > MAX_MEMBER_BYTES:
-                    copies.append(
-                        ArchiveCopy(
-                            key=f"history/{label}/{profile}/{kind}",
-                            label=label,
-                            when=f"{info.date_time[0]:04d}-{info.date_time[1]:02d}-"
-                            f"{info.date_time[2]:02d}",
-                            profile=profile,
-                            kind=kind,
-                            source=f"archive {path.name}",
-                            path=path,
-                            member=member,
-                            text="",
-                            error=f"member is {info.file_size:,} bytes, not read",
-                        )
-                    )
-                    continue
-                text = archive.read(member).decode("utf-8", "replace")
-                copies.append(
-                    ArchiveCopy(
-                        key=f"history/{label}/{profile}/{kind}",
-                        label=label,
-                        when=f"{info.date_time[0]:04d}-{info.date_time[1]:02d}-"
-                        f"{info.date_time[2]:02d}",
-                        profile=profile,
-                        kind=kind,
-                        source=f"archive {path.name}",
-                        path=path,
-                        member=member,
-                        text=text,
-                        entries=_entries_for(profile, kind, text),
-                    )
-                )
-    except (OSError, zipfile.BadZipFile, NotImplementedError) as exc:
-        return [], f"{path.name}: {type(exc).__name__}: {exc}"
-    _ = root
-    return copies, ""
-
-
-def _read_snapshot(directory: Path) -> tuple[list[ArchiveCopy], bool, str]:
-    """Memory copies inside a snapshot directory, and whether its manifest kept any.
-
-    The pre-update snapshots ship a ``manifest.json`` listing exactly what they hold --
-    state.db, config.yaml, cron/ and a few databases, and deliberately **not** memories.
-    Reading the manifest is how this reports that honestly instead of scanning a 126 MB
-    directory for files that were never meant to be there.
-    """
-    manifest_path = directory / SNAPSHOT_MANIFEST
-    holds_memories = False
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return [], False, f"{directory.name}: unreadable manifest ({exc})"
-        files = manifest.get("files") if isinstance(manifest, dict) else None
-        if isinstance(files, dict):
-            holds_memories = any(
-                isinstance(name, str) and MEMBER_RE.search(name) for name in files
-            )
-    copies: list[ArchiveCopy] = []
-    for kind in KINDS:
-        path = directory / "memories" / KIND_LABELS[kind]
-        if not path.is_file():
-            continue
-        text, _truncated, error = read_text(path, limit=200_000)
-        if error:
-            continue
-        copies.append(
-            ArchiveCopy(
-                key=f"history/{directory.name}/default/{kind}",
-                label=directory.name,
-                when=directory.name.split("-")[0],
-                profile="default",
-                kind=kind,
-                source=f"snapshot {directory.name}",
-                path=path,
-                member=f"memories/{KIND_LABELS[kind]}",
-                text=text,
-                entries=_entries_for("default", kind, text),
-            )
-        )
-    return copies, holds_memories, ""
-
-
-def collect_history(root: Path) -> tuple[list[ArchiveCopy], list[str], list[str]]:
-    """Every older copy of a memory file, plus notes about what was scanned.
-
-    Returns ``(copies, notes, scanned)``: the archived memory files found, notes about
-    containers that hold no memories, and the containers that were looked at.
-    """
-    copies: list[ArchiveCopy] = []
-    notes: list[str] = []
-    scanned: list[str] = []
-    for archive_path in sorted((root / "backups").glob("*.zip")):
-        scanned.append(archive_path.name)
-        found, error = _read_zip(archive_path, root)
-        copies.extend(found)
-        if error:
-            notes.append(error)
-        elif not found:
-            notes.append(f"{archive_path.name} holds no memory files")
-    for snapshot_dir in sorted((root / "state-snapshots").glob("*")):
-        if not snapshot_dir.is_dir():
-            continue
-        scanned.append(snapshot_dir.name)
-        found, holds, error = _read_snapshot(snapshot_dir)
-        copies.extend(found)
-        if error:
-            notes.append(error)
-        elif not found and not holds:
-            notes.append(
-                f"snapshot {snapshot_dir.name} keeps no memories by design "
-                "(its manifest lists state.db, config.yaml and cron/, not memories/)"
-            )
-    copies.sort(key=lambda copy: copy.when, reverse=True)
-    return copies, notes, scanned
-
-
-@dataclass(frozen=True)
 class _Snapshot:
     """Everything the domain read, once per process."""
 
@@ -349,6 +138,15 @@ class _Snapshot:
         """The live file a profile/kind pair names, if it is still there."""
         return self.by_key().get(f"{profile}/{kind}")
 
+    def narrowed(self, files: tuple[MemoryFile, ...]) -> _Snapshot:
+        """A snapshot holding only *files*, with every other field carried over.
+
+        Rebuilding this dataclass by hand lost the history fields once already: a
+        ``?profile=`` view quietly showed no archived copies because the narrowing had
+        defaulted them away.
+        """
+        return replace(self, files=files)
+
     def by_history_key(self) -> dict[str, ArchiveCopy]:
         """Archived copy key -> copy."""
         return {copy.key: copy for copy in self.history}
@@ -360,71 +158,6 @@ class _Snapshot:
     def entries(self) -> list[MemoryEntry]:
         """Every entry, in file order."""
         return [entry for memory_file in self.files for entry in memory_file.entries]
-
-
-def _overlap(left: str, right: str) -> float:
-    """How much two entries have in common, as a word-set Jaccard ratio."""
-    a = set(re.findall(r"[a-z0-9]+", left.lower()))
-    b = set(re.findall(r"[a-z0-9]+", right.lower()))
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
-
-def delta_against(
-    old: tuple[MemoryEntry, ...], new: tuple[MemoryEntry, ...]
-) -> dict[str, tuple[MemoryEntry, ...]]:
-    """Compare an archived copy against the live file, entry by entry.
-
-    Two passes, because one is not enough on real memory.  Entries are matched first by
-    their **title line** (the first non-empty line, which is what the agent writes first
-    and what the lists show).  Whatever is left unmatched is then paired by *word
-    overlap*, best partner first, above :data:`OVERLAP_FLOOR`.
-
-    The second pass catches an entry that was rewritten enough to lose its opening line:
-    under title matching alone it reads as a removal plus an addition.  Measured against
-    this machine's own archive, it pairs the one entry edited in place (57% overlap) and
-    leaves the rest alone -- which is right, because the rest really are different
-    entries: that memory was consolidated in the three weeks since the copy.
-    What remains unpaired after both passes is genuinely added or removed.
-    """
-    old_by_title: dict[str, MemoryEntry] = {}
-    for entry in old:
-        old_by_title.setdefault(entry.title, entry)
-    new_by_title: dict[str, MemoryEntry] = {}
-    for entry in new:
-        new_by_title.setdefault(entry.title, entry)
-
-    changed: list[MemoryEntry] = [
-        new_by_title[title]
-        for title in new_by_title
-        if title in old_by_title
-        and new_by_title[title].text != old_by_title[title].text
-    ]
-    old_left = [e for title, e in old_by_title.items() if title not in new_by_title]
-    new_left = [e for title, e in new_by_title.items() if title not in old_by_title]
-
-    taken: set[str] = set()
-    pairs: list[tuple[MemoryEntry, MemoryEntry]] = []
-    for older in old_left:
-        best: tuple[float, MemoryEntry] | None = None
-        for newer in new_left:
-            if newer.key in taken:
-                continue
-            score = _overlap(older.text, newer.text)
-            if score >= OVERLAP_FLOOR and (best is None or score > best[0]):
-                best = (score, newer)
-        if best is not None:
-            taken.add(best[1].key)
-            pairs.append((older, best[1]))
-
-    paired_old = {older.key for older, _newer in pairs}
-    changed.extend(newer for _older, newer in pairs)
-    return {
-        "added": tuple(entry for entry in new_left if entry.key not in taken),
-        "removed": tuple(entry for entry in old_left if entry.key not in paired_old),
-        "changed": tuple(changed),
-    }
 
 
 def _profile_label(home: Path) -> str:
@@ -528,25 +261,26 @@ def _read_file(
     )
 
 
-def build_domain(hermes_home: Path | None = None) -> Domain:
-    """Build the memory domain.
+class MemoryDomain(SnapshotDomain["_Snapshot"]):
+    """The memory files, their budgets, and the archives that hold older copies.
 
-    Args:
-        hermes_home: Hermes home or profile directory.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`.  Files and entries are read once, on
-        first use, and reused afterwards, so the page reports the moment it read them.
+    ``read`` produces the snapshot every page is served from; the rest of the class is
+    the callables the portal asks for plus the collection builders and record shapers
+    they use -- named methods now, so a test can call one directly.
     """
-    state: dict[str, _Snapshot] = {}
 
-    def snapshot() -> _Snapshot:
-        if "value" in state:
-            return state["value"]
-        limits, config_note = _limits(hermes_root(hermes_home))
+    key = "memory"
+    title = "Memory"
+    summary = (
+        "What the agent has written down about itself and its user, and how full each "
+        "file is."
+    )
+
+    def read(self) -> _Snapshot:
+        limits, config_note = _limits(hermes_root(self.hermes_home))
         files: list[MemoryFile] = []
         locks = 0
-        for label, directory in _memory_dirs(hermes_home):
+        for label, directory in _memory_dirs(self.hermes_home):
             locks += len(list(directory.glob("*.lock")))
             for kind in KINDS:
                 path = directory / KIND_LABELS[kind]
@@ -554,9 +288,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                     continue
                 files.append(_read_file(label, kind, path, limits.get(kind)))
         history, history_notes, history_scanned = collect_history(
-            hermes_root(hermes_home)
+            hermes_root(self.hermes_home)
         )
-        value = _Snapshot(
+        return _Snapshot(
             files=tuple(files),
             locks=locks,
             limits=limits,
@@ -566,10 +300,8 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             history_notes=tuple(history_notes),
             history_scanned=tuple(history_scanned),
         )
-        state["value"] = value
-        return value
 
-    def sources(current: _Snapshot) -> tuple[Source, ...]:
+    def _sources(self, current: _Snapshot) -> tuple[Source, ...]:
         """The directories this domain looked in, whether or not they exist.
 
         Naming a missing directory is the point: every other collection in the portal
@@ -578,11 +310,11 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         no sources at all.
         """
         home = (
-            Path(hermes_home)
-            if hermes_home is not None
+            Path(self.hermes_home)
+            if self.hermes_home is not None
             else skill_trees.default_hermes_home()
         )
-        root = hermes_root(hermes_home)
+        root = hermes_root(self.hermes_home)
         looked: list[tuple[str, Path]] = [(_profile_label(root), root / "memories")]
         if home != root:
             looked.append((_profile_label(home), home / "memories"))
@@ -609,9 +341,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             )
         return tuple(sources_found[:4])
 
-    def _picker(selected: str) -> Picker:
+    def _picker(self, selected: str) -> Picker:
         """A dropdown over the profiles that have memories."""
-        current = snapshot()
+        current = self.snapshot()
         counter: Counter[str] = Counter(item.profile for item in current.files)
         return Picker(
             query_key="profile",
@@ -623,7 +355,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             selected=selected,
         )
 
-    def _files_collection(current: _Snapshot, selected: str = "") -> Collection:
+    def _files_collection(self, current: _Snapshot, selected: str = "") -> Collection:
         """One record per memory file, fullest first."""
         rows = sorted(
             current.files,
@@ -698,8 +430,8 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "budget config.yaml sets for it.",
             "memory files across the profiles found",
             records,
-            sources=sources(current),
-            picker=_picker(selected),
+            sources=self._sources(current),
+            picker=self._picker(selected),
             extra_counts=(
                 Count(len(current.entries()), "entries across those files"),
                 Count(at_cap, "files at or over their limit"),
@@ -709,7 +441,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
-    def _history_collection(current: _Snapshot) -> Collection:
+    def _history_collection(self, current: _Snapshot) -> Collection:
         """Older copies of the memory files, newest first, with what changed since."""
         records = []
         for copy in current.history:
@@ -783,7 +515,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "Hermes home, newest first, compared with the file today.",
             "archived copies of a memory file",
             records,
-            sources=sources(current),
+            sources=self._sources(current),
             extra_counts=(
                 Count(len(current.history), "archived memory files found"),
                 Count(len(current.history_scanned), "archives and snapshots looked in"),
@@ -796,7 +528,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
-    def _entries_collection(current: _Snapshot) -> Collection:
+    def _entries_collection(self, current: _Snapshot) -> Collection:
         """One record per entry: the unit the agent writes."""
         records = [
             Record(
@@ -822,7 +554,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             f"entries separated by {ENTRY_SEPARATOR} in {len(current.files)} file(s)",
             records,
             cap=ENTRIES_CAP,
-            sources=sources(current),
+            sources=self._sources(current),
             notes=(
                 "a session loads its copy of memory when it starts, so a file can be "
                 "newer than what a running agent is thinking with",
@@ -830,7 +562,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
-    def _kinds_collection(current: _Snapshot) -> Collection:
+    def _kinds_collection(self, current: _Snapshot) -> Collection:
         """MEMORY.md versus USER.md, across profiles."""
         records = []
         for kind in KINDS:
@@ -866,37 +598,35 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "The two files Hermes keeps, compared across profiles.",
             "kinds of memory file (MEMORY.md and USER.md)",
             records,
-            sources=sources(current),
+            sources=self._sources(current),
             as_of=current.as_of,
         )
 
-    def collections(filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections.  ``?profile=`` narrows to one profile.
 
         The filter is honoured strictly: a profile with no memories shows nothing and
         says so, rather than quietly showing every profile's.
         """
-        current = snapshot()
+        current = self.snapshot()
         wanted = ((filters or {}).get("profile") or "").strip()
         if wanted:
-            current = _Snapshot(
-                files=tuple(item for item in current.files if item.profile == wanted),
-                locks=current.locks,
-                limits=current.limits,
-                config_note=current.config_note,
-                as_of=current.as_of,
+            current = current.narrowed(
+                tuple(item for item in current.files if item.profile == wanted)
             )
-        files_collection = _files_collection(current, wanted)
+        files_collection = self._files_collection(current, wanted)
         return [
             files_collection,
-            _entries_collection(current),
-            _history_collection(current),
-            _kinds_collection(current),
+            self._entries_collection(current),
+            self._history_collection(current),
+            self._kinds_collection(current),
         ]
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """Headline: how much is written down, and how full it is."""
-        current = snapshot()
+        current = self.snapshot()
         entries = current.entries()
         at_cap = sum(1 for item in current.files if item.at_cap)
         fullest = max((item.percent or 0.0 for item in current.files), default=0.0)
@@ -929,7 +659,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for item in current.files
             ],
             cap=5,
-            sources=sources(current),
+            sources=self._sources(current),
             extra_counts=tuple(counts),
             metrics=(
                 ("Files", str(len(current.files))),
@@ -941,20 +671,20 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One file, one entry, or one archived copy."""
-        current = snapshot()
+        current = self.snapshot()
         if record_id.startswith("history/"):
-            return _archive_record(current, record_id)
+            return self._archive_record(current, record_id)
         parts = record_id.split("/")
         if len(parts) >= 3 and parts[-1].isdigit():
-            return _entry_record(current, "/".join(parts[:-1]), int(parts[-1]))
+            return self._entry_record(current, "/".join(parts[:-1]), int(parts[-1]))
         memory_file = current.by_key().get(record_id)
         if memory_file is None:
             return None
-        return _file_record(memory_file)
+        return self._file_record(memory_file)
 
-    def _file_record(memory_file: MemoryFile) -> Record:
+    def _file_record(self, memory_file: MemoryFile) -> Record:
         """The record for a whole memory file."""
         return Record(
             id=memory_file.key,
@@ -993,7 +723,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             body=truncate(memory_file.text, BODY_CAP),
         )
 
-    def _archive_record(current: _Snapshot, record_id: str) -> Record | None:
+    def _archive_record(self, current: _Snapshot, record_id: str) -> Record | None:
         """One archived copy: what it held, and what has moved since."""
         copy = current.by_history_key().get(record_id)
         if copy is None:
@@ -1035,7 +765,11 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         )
 
     def _archived_rows(
-        entries: Sequence[MemoryEntry], archive: ArchiveCopy, *, live_link: str
+        self,
+        entries: Sequence[MemoryEntry],
+        archive: ArchiveCopy,
+        *,
+        live_link: str,
     ) -> list[Record]:
         """Rows for archived entries: they link to the current file, never to a
         history id, because an archived entry has no page of its own.
@@ -1054,7 +788,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             for entry in entries
         ]
 
-    def _entry_record(current: _Snapshot, file_key: str, index: int) -> Record | None:
+    def _entry_record(
+        self, current: _Snapshot, file_key: str, index: int
+    ) -> Record | None:
         """The record for one entry."""
         memory_file = current.by_key().get(file_key)
         if memory_file is None:
@@ -1100,7 +836,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         )
 
     def _archive_sections(
-        current: _Snapshot, copy: ArchiveCopy
+        self, current: _Snapshot, copy: ArchiveCopy
     ) -> Sequence[Collection]:
         """What the copy held, and the three ways entries have moved since."""
         live = current.file_for(copy.profile, copy.kind)
@@ -1119,7 +855,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 f"Entries as they were ({copy.when})",
                 "Everything this archived copy held, in order.",
                 f"entries separated by {ENTRY_SEPARATOR} in the archived file",
-                _archived_rows(copy.entries, copy, live_link=live_link),
+                self._archived_rows(copy.entries, copy, live_link=live_link),
                 sources=(path_source(f"archive {copy.label}", copy.path),),
                 notes=then_notes,
                 as_of=current.as_of,
@@ -1147,13 +883,13 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 "reworded",
                 "Reworded since",
                 "Entries whose opening line survived but whose text changed.",
-                _archived_rows(delta["changed"], copy, live_link=live_link),
+                self._archived_rows(delta["changed"], copy, live_link=live_link),
             ),
             (
                 "removed",
                 "Removed since",
                 "Entries the copy had that the file has lost.",
-                _archived_rows(delta["removed"], copy, live_link=live_link),
+                self._archived_rows(delta["removed"], copy, live_link=live_link),
             ),
         ):
             if not rows:
@@ -1171,13 +907,13 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             )
         return sections
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind a record: a file's entries, an entry's neighbours, or an
         archive's diff."""
-        current = snapshot()
+        current = self.snapshot()
         if record_id.startswith("history/"):
             copy = current.by_history_key().get(record_id)
-            return _archive_sections(current, copy) if copy else []
+            return self._archive_sections(current, copy) if copy else []
         parts = record_id.split("/")
         if len(parts) >= 3 and parts[-1].isdigit():
             file_key = "/".join(parts[:-1])
@@ -1198,7 +934,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                     f"Other entries in {memory_file.label}",
                     "The rest of the same file, either side of this one.",
                     f"entries in {memory_file.label} near entry {index}",
-                    [_entry_row(item) for item in neighbours],
+                    [self._entry_row(item) for item in neighbours],
                     notes=("a memory entry is written and pruned as a whole",),
                     as_of=current.as_of,
                 )
@@ -1212,7 +948,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 f"Entries in {memory_file.label}",
                 "Every entry this file holds, in order.",
                 f"entries separated by {ENTRY_SEPARATOR}",
-                [_entry_row(item) for item in memory_file.entries],
+                [self._entry_row(item) for item in memory_file.entries],
                 as_of=current.as_of,
             )
         ]
@@ -1274,7 +1010,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             )
         return sections
 
-    def _entry_row(entry: MemoryEntry) -> Record:
+    def _entry_row(self, entry: MemoryEntry) -> Record:
         """One entry as a list row (its own detail page is the full text)."""
         return Record(
             id=entry.key,
@@ -1283,13 +1019,13 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             badges=(KIND_LABELS[entry.kind], entry.profile),
         )
 
-    def search(query: str, limit: int) -> Sequence[Record]:
+    def search(self, query: str, limit: int) -> Sequence[Record]:
         """Find entries by their text; the file and profile name match too."""
         wanted = query.strip().lower()
         if not wanted:
             return []
         hits: list[Record] = []
-        for entry in snapshot().entries():
+        for entry in self.snapshot().entries():
             # offsets are taken from the entry text alone: searching a "title + text"
             # string shifts every match by the length of the title
             position = entry.text.lower().find(wanted)
@@ -1310,14 +1046,16 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 break
         return hits
 
-    return Domain(
-        key="memory",
-        title="Memory",
-        summary="What the agent has written down about itself and its user, and how "
-        "full each file is.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(hermes_home: Path | None = None) -> Domain:
+    """Build the memory domain.
+
+    Args:
+        hermes_home: Hermes home or profile directory.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.  Files, archives and snapshots are read
+        once, on first use, and reused afterwards, so a page reports the moment it read
+        them.
+    """
+    return MemoryDomain(hermes_home).domain()

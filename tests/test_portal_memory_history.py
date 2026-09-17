@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes.portal.domains import memory as memory_domain  # noqa: E402
+from hermes.portal.domains import memory_files  # noqa: E402
 from hermes.portal.model import DomainRegistry  # noqa: E402
 
 SEPARATOR = "\u00a7"
@@ -84,10 +85,10 @@ class DeltaTestCase(unittest.TestCase):
     """The comparison rule, on hand-made entries."""
 
     def entries(self, *texts: str, profile: str = "default", kind: str = "memory"):
-        return memory_domain._entries_for(profile, kind, SEPARATOR.join(texts))
+        return memory_files._entries_for(profile, kind, SEPARATOR.join(texts))
 
     def test_identical_copies_report_no_change(self) -> None:
-        delta = memory_domain.delta_against(self.entries("one"), self.entries("one"))
+        delta = memory_files.delta_against(self.entries("one"), self.entries("one"))
         self.assertEqual(
             [len(delta[key]) for key in ("added", "removed", "changed")], [0, 0, 0]
         )
@@ -95,7 +96,7 @@ class DeltaTestCase(unittest.TestCase):
     def test_a_reworded_entry_is_changed_not_replaced(self) -> None:
         old = self.entries("Ship the portal, carefully.")
         new = self.entries("Ship the portal, carefully and slowly.")
-        delta = memory_domain.delta_against(old, new)
+        delta = memory_files.delta_against(old, new)
         self.assertEqual(len(delta["changed"]), 1)
         self.assertEqual(delta["added"], ())
         self.assertEqual(delta["removed"], ())
@@ -108,7 +109,7 @@ class DeltaTestCase(unittest.TestCase):
         new = self.entries(
             "Hermes macOS web-UI with Desktop mode off: a local patch plus a watchdog."
         )
-        delta = memory_domain.delta_against(old, new)
+        delta = memory_files.delta_against(old, new)
         self.assertEqual(len(delta["changed"]), 1, delta)
         self.assertEqual(delta["added"], ())
         self.assertEqual(delta["removed"], ())
@@ -116,23 +117,23 @@ class DeltaTestCase(unittest.TestCase):
     def test_genuinely_different_entries_are_added_and_removed(self) -> None:
         old = self.entries("Google Drive Hermes: imports and exports live in Drive.")
         new = self.entries("Obsidian vault is at /Volumes/Data/MyObsidian now.")
-        delta = memory_domain.delta_against(old, new)
+        delta = memory_files.delta_against(old, new)
         self.assertEqual(len(delta["added"]), 1)
         self.assertEqual(len(delta["removed"]), 1)
         self.assertEqual(delta["changed"], ())
 
     def test_one_side_empty_is_all_added_or_all_removed(self) -> None:
         self.assertEqual(
-            len(memory_domain.delta_against((), self.entries("x"))["added"]), 1
+            len(memory_files.delta_against((), self.entries("x"))["added"]), 1
         )
         self.assertEqual(
-            len(memory_domain.delta_against(self.entries("x"), ())["removed"]), 1
+            len(memory_files.delta_against(self.entries("x"), ())["removed"]), 1
         )
 
     def test_overlap_is_a_word_set_ratio(self) -> None:
-        self.assertEqual(memory_domain._overlap("a b c", "a b c"), 1.0)
-        self.assertEqual(memory_domain._overlap("a b", "c d"), 0.0)
-        self.assertEqual(memory_domain._overlap("", "a"), 0.0)
+        self.assertEqual(memory_files._overlap("a b c", "a b c"), 1.0)
+        self.assertEqual(memory_files._overlap("a b", "c d"), 0.0)
+        self.assertEqual(memory_files._overlap("", "a"), 0.0)
 
 
 class ArchiveDiscoveryTestCase(unittest.TestCase):
@@ -386,7 +387,7 @@ class DegradationTestCase(unittest.TestCase):
             root = make_home(Path(tmp))
             make_archive(
                 root / "backups" / "huge-backup.zip",
-                {"memories/MEMORY.md": b"A" * (memory_domain.MAX_MEMBER_BYTES + 1)},
+                {"memories/MEMORY.md": b"A" * (memory_files.MAX_MEMBER_BYTES + 1)},
             )
             domain, registry = self.build(root)
             snapshots = next(
