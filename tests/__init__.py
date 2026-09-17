@@ -1,3 +1,3 @@
-"""Test package for Hermes-Dashboard (standard library ``unittest`` only)."""
+"""Test package for Hermes Portal (standard library ``unittest`` only)."""
 
 from __future__ import annotations

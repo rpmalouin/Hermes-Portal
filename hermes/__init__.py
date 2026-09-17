@@ -1,4 +1,4 @@
-"""Hermes-Dashboard: a modular, standard-library-only skill framework.
+"""Hermes Portal: a read-only drill-down over everything Hermes keeps, plus the
 
 Layout (mirrors the Hermes Skill Deck system):
 

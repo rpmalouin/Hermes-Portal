@@ -1,4 +1,4 @@
-"""Example Hermes-Dashboard skill: transform a text input.
+"""Example Hermes Portal skill: transform a text input.
 
 This file is launched as a plain script by
 :func:`hermes.core.executor.run_skill`, so it is standard-library only and

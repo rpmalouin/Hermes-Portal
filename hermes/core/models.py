@@ -1,4 +1,4 @@
-"""Data models for the Hermes-Dashboard skill framework.
+"""Data models for the Hermes Portal skill framework.
 
 A :class:`Skill` mirrors the on-disk ``skill.json`` manifest field for field.
 :class:`SkillResult` is the outcome of running one skill.  Validation in

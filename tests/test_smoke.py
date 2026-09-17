@@ -1,4 +1,4 @@
-"""Tests for the Hermes-Dashboard framework itself (standard library only).
+"""Tests for the Hermes Portal skill framework (standard library only).
 
 The framework half of the suite: manifest validation, the loader's never-raise
 contract, the registry, the executor's argv rules, the runtime and the REPL.  The

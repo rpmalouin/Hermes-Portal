@@ -1,4 +1,4 @@
-"""Core building blocks of the Hermes-Dashboard skill framework.
+"""Core building blocks of the Hermes Portal skill framework.
 
 Re-exports the public API so callers can write::
 

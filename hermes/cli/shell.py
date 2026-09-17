@@ -41,7 +41,7 @@ from ..core.runtime import Runtime
 PROMPT = "hermes> "
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
-BANNER = "Hermes-Dashboard skill shell -- type 'help' for commands, 'exit' to leave."
+BANNER = "Hermes Portal skill shell -- type 'help' for commands, 'exit' to leave."
 
 HELP_TEXT = """\
 Commands
@@ -237,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the shell's argument parser."""
     parser = argparse.ArgumentParser(
         prog="python -m hermes.cli.shell",
-        description="Interactive shell for the Hermes-Dashboard skill framework.",
+        description="Interactive shell for the Hermes Portal skill framework.",
     )
     parser.add_argument(
         "--root",

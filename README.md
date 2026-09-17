@@ -1,4 +1,4 @@
-# Hermes-Dashboard
+# Hermes Portal
 
 Two standard-library-only Python halves that grew into one repository: **the Hermes
 Portal** — a read-only, ten-domain drill-down over everything the running Hermes agent
@@ -208,7 +208,7 @@ A real session (copied verbatim from a run):
 
 ```
 $ python3 -m hermes.cli.shell
-Hermes-Dashboard skill shell -- type 'help' for commands, 'exit' to leave.
+Hermes Portal skill shell -- type 'help' for commands, 'exit' to leave.
 hermes> skills
 NAME           BOX  TITLE
 -------------  ---  -----
@@ -758,7 +758,9 @@ it had to be interpreted, all of them deliberate:
   a volume that does not exist on the generation host (and `/Volumes` is not
   writable without `sudo`). The tree was written to the developer's project root
   as `Hermes-Dashboard`, keeping the spec's own spelling; the spec's other
-  spelling, `HermesDashboard`, refers to the same tree.
+  spelling, `HermesDashboard`, refers to the same tree. **Renamed to
+  `Hermes-Portal` on 2026-09-17**: the old name read as a second Hermes
+  dashboard beside the one Hermes already ships on 9119, which this never was.
 * **Packaging came later, on request.** The spec listed an exact tree, so the
   first pass shipped without `pyproject.toml`, `LICENSE` or `.gitignore`. They
   were added afterwards; no file from the specified tree changed shape to
