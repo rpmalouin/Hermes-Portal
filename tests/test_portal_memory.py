@@ -38,7 +38,7 @@ MEMORY_TEXT = (
     "Third note, shorter.\n"
 )
 USER_TEXT = (
-    f"Ron is the user. Prefers short answers.\n\n{SEPARATOR}\n\nSecond user fact.\n"
+    f"The user is Ada. Prefers short answers.\n\n{SEPARATOR}\n\nSecond user fact.\n"
 )
 
 

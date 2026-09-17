@@ -6,7 +6,8 @@ index is built lazily on first use and kept for the life of the process, so ever
 page stamps its ``as of`` and the note says so: restart the portal to re-read the
 vault after an edit.
 
-Sources: the vault directory (``--vault``, default ``/Volumes/Data/MyObsidian``)
+Sources: the vault directory (``--vault``, else ``$HERMES_VAULT``, else the default
+``/Volumes/Data/MyObsidian``)
 and the Kanban board note inside it, whose ``##`` headings are the columns and
 whose checkbox lines are the cards.
 
@@ -17,6 +18,7 @@ left alone rather than guessed at.
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -36,7 +38,11 @@ from ..sources import (
 )
 from .base import SnapshotDomain
 
-DEFAULT_VAULT = Path("/Volumes/Data/MyObsidian")
+#: Where the vault is read when ``--vault`` is not given.  ``$HERMES_VAULT`` wins, so a
+#: machine whose notes live elsewhere (another volume, a container) points the portal at
+#: them without editing this line.  The literal below is the vault this was built
+#: against; a missing vault is reported on the page rather than hidden.
+DEFAULT_VAULT = Path(os.environ.get("HERMES_VAULT") or "/Volumes/Data/MyObsidian")
 SKIPPED_DIRS = frozenset({".obsidian", ".trash", ".git", ".smart-env", "node_modules"})
 BODY_CAP = 6000
 RECENT_CAP = 20

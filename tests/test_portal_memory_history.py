@@ -36,20 +36,20 @@ SEPARATOR = "\u00a7"
 SECRET = "sk-ARCHIVE-SECRET-9999"
 
 OLD_MEMORY = (
-    "Hermes model: Ron uses free Nemotron 3 via OpenRouter.\n\n"
+    "Hermes model: the user runs a local model.\n\n"
     f"{SEPARATOR}\n\n"
     "Google Drive Hermes: Imports/Exports live in the Drive folder.\n\n"
     f"{SEPARATOR}\n\n"
     "An entry that gets reworded in place later on.\n"
 )
-OLD_USER = 'Ron Malouin (prefers "Ron").\n'
+OLD_USER = 'Ada Lovelace (prefers "Ada").\n'
 
 NEW_MEMORY = (
     "Model: Nemotron 3 via OpenRouter, and cron jobs store a model snapshot.\n\n"
     f"{SEPARATOR}\n\n"
     "An entry that was reworded in place later on, with more words added to it now.\n"
 )
-NEW_USER = f'Ron Malouin (prefers "Ron").\n\n{SEPARATOR}\n\nSecond user fact.\n'
+NEW_USER = f'Ada Lovelace (prefers "Ada").\n\n{SEPARATOR}\n\nSecond user fact.\n'
 
 
 def make_archive(path: Path, members: dict[str, bytes]) -> Path:
@@ -116,7 +116,7 @@ class DeltaTestCase(unittest.TestCase):
 
     def test_genuinely_different_entries_are_added_and_removed(self) -> None:
         old = self.entries("Google Drive Hermes: imports and exports live in Drive.")
-        new = self.entries("Obsidian vault is at /Volumes/Data/MyObsidian now.")
+        new = self.entries("Obsidian vault is at ~/Obsidian now.")
         delta = memory_files.delta_against(old, new)
         self.assertEqual(len(delta["added"]), 1)
         self.assertEqual(len(delta["removed"]), 1)
@@ -198,7 +198,7 @@ class ArchiveDiscoveryTestCase(unittest.TestCase):
         )
         fields = dict(memory_row.fields)
         # three archived entries against two today: the reworded one pairs by overlap
-        # (changed), "Google Drive" is gone, and "Hermes model: Ron uses..." shares only
+        # (changed), "Google Drive" is gone, and "Hermes model: the user..." shares only
         # 33% of its words with today's model entry, which the 40% floor correctly reads
         # as two different entries rather than as one edit
         self.assertEqual(fields["entries then"], "3")

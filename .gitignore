@@ -35,3 +35,23 @@ htmlcov/
 *.swp
 # Added by code-review-graph
 .code-review-graph/
+
+# Other agents' per-machine configs and the code-review-graph installer's output.
+# They are installed here (code-review-graph install) and point at absolute paths on
+# this machine, and they carry skill trees of uncertain provenance, so they stay out
+# of the public repository and remain on disk untouched.
+.claude/
+.codebuddy/
+.cursorrules
+.gemini/
+.github/code-review-graph*
+.kiro/
+.mcp.json
+.qoder/
+.windsurfrules
+AGENTS.md
+CLAUDE.md
+CODEBUDDY.md
+GEMINI.md
+QODER.md
+opencode.jsonc

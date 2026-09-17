@@ -134,7 +134,7 @@ anything you can see, you can also fetch:
 Filters live in the URL and combine: `?box=creative` (or a category path,
 `?box=mlops/evaluation`), `?folder=Homelab`, `?kind=platform`, `?model=…`, `?profile=…`.
 
-Useful flags: `--vault` (which Obsidian vault), `--graph-db` (which code graph),
+Useful flags: `--vault` (which Obsidian vault; or set `$HERMES_VAULT`), `--graph-db` (which code graph),
 `--profile` / `--all-profiles` (whose skills), `--hermes-home`, `--port`, `--host` (read
 [the security note](#what-it-does-about-being-a-local-server-holding-secrets) before moving
 off loopback), `--no-state`.
@@ -463,7 +463,7 @@ Ten domains, each with collections, drill-down and search:
 | usage | `state.db` | `sessions`, `session_model_usage` | 87 priced sessions — $16.68 estimated, 30.0M in / 2.6M out tokens, 4,292 calls |
 | health | `launchctl`, LaunchAgents plists, `state.db`, `lsof`, `cron/ticker_*`, file sizes | services, heartbeats, ports, tickers, storage | the services found — plus running/stale counts |
 | logs | `$HERMES_HOME/logs`, `~/Library/Logs` | the last 200 KB of each file, error signatures | log files in scope — plus distinct signatures |
-| vault | the Obsidian vault (`--vault`, default `/Volumes/Data/MyObsidian`) | all notes indexed in memory, frontmatter, `[[wiki links]]`, checkboxes, the Kanban board | 763 notes — plus 1,116 links, 141 tags, 76 open items |
+| vault | the Obsidian vault (`--vault`, else `$HERMES_VAULT`, else the author's `/Volumes/Data/MyObsidian`) | all notes indexed in memory, frontmatter, `[[wiki links]]`, checkboxes, the Kanban board | 763 notes — plus 1,116 links, 141 tags, 76 open items |
 | graph | `.code-review-graph/graph.db` (`--graph-db`) | precomputed tables: communities, risk, flows; FTS for search | 38 communities — plus 170,971 nodes, 1.5M edges (cached count) |
 | memory | `memories/MEMORY.md` and `USER.md`, per profile, plus `config.yaml`, plus the archives under `backups/` | every entry, split on the section sign, measured against its character budget; older copies with what changed since | 6 files over 3 profiles — 42 entries; one at 2,200/2,200; 2 archived copies from 2026-08-25 |
 | plugins | `plugin.yaml` manifests under the bundled tree, `~/.hermes/plugins/`, each profile's, and `config.yaml` | names, kinds, versions, file lists, declared env vars and hooks | 105 plugins in 8 kinds; 41 declare requirements |
@@ -641,7 +641,7 @@ than pretend:
 | --- | --- | --- |
 | health | `launchctl list`, `~/Library/LaunchAgents/*.plist` | finds nothing, reports 0 services with the sources marked `MISSING`; a `systemd` reader is the equivalent work |
 | logs | also reads `~/Library/Logs/*.log` | reads `$HERMES_HOME/logs` only |
-| vault | defaults to `/Volumes/Data/MyObsidian` | pass `--vault <path>`, or it reports an empty vault |
+| vault | defaults to `$HERMES_VAULT`, else the author's `/Volumes/Data/MyObsidian` | pass `--vault <path>`, or it reports an empty vault |
 
 Everything else -- skills, sessions, cron, usage, the code graph, favourites -- is
 resolved from the Hermes home and needs no platform code.

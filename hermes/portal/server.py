@@ -668,7 +668,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--vault",
         type=Path,
         default=None,
-        help="Obsidian vault to index (default: /Volumes/Data/MyObsidian)",
+        help=(
+            "Obsidian vault to index (default: $HERMES_VAULT, else "
+            "/Volumes/Data/MyObsidian)"
+        ),
     )
     parser.add_argument(
         "--list", action="store_true", help="print the registry summary and exit"
