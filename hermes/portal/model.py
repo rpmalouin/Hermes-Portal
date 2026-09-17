@@ -53,6 +53,21 @@ class Source:
 
 
 @dataclass(frozen=True)
+class Picker:
+    """A dropdown that narrows a collection over the query string.
+
+    Domains build these; the renderer only draws them.  Keeping the URL shape in
+    the adapter means a new filter is a new picker, not a change to the page code.
+    """
+
+    query_key: str
+    options: tuple[tuple[str, str], ...] = ()
+    all_label: str = "All"
+    selected: str = ""
+    label: str = "Filter"
+
+
+@dataclass(frozen=True)
 class Record:
     """One row of a collection, and the detail page behind it.
 
@@ -90,6 +105,8 @@ class Collection:
     extra_counts: tuple[Count, ...] = ()
     notes: tuple[str, ...] = ()
     as_of: str = ""
+    display: str = "rows"
+    picker: Picker | None = None
 
     @property
     def shown(self) -> int:
@@ -114,6 +131,8 @@ def build_collection(
     extra_counts: Sequence[Count] = (),
     notes: Sequence[str] = (),
     as_of: str = "",
+    display: str = "rows",
+    picker: Picker | None = None,
 ) -> Collection:
     """Assemble a :class:`Collection`, applying an optional display *cap*.
 
@@ -128,6 +147,8 @@ def build_collection(
         extra_counts: Additional competing counts worth publishing.
         notes: Per-adapter warnings, errors and caveats.
         as_of: ISO-8601 UTC stamp for the read.
+        display: How the records read best: ``"rows"`` (default) or ``"cards"``.
+        picker: Optional dropdown for narrowing this collection.
 
     Returns:
         A :class:`Collection`; ``truncated`` is derived, never passed in.
@@ -143,6 +164,8 @@ def build_collection(
         extra_counts=tuple(extra_counts),
         notes=tuple(notes),
         as_of=as_of,
+        display=display,
+        picker=picker,
     )
 
 

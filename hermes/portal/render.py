@@ -19,7 +19,7 @@ import re
 from collections.abc import Mapping, Sequence
 from string import Template
 
-from .model import Collection, Domain, Record
+from .model import Collection, Domain, Picker, Record
 
 BODY_PREVIEW = 400
 _CODE_RE = re.compile(r"`([^`]+)`")
@@ -118,6 +118,38 @@ PAGE = Template(
     details.body summary { color: #8d92ad; cursor: pointer; font-size: 0.82rem; }
     .empty { color: #8d92ad; font-style: italic; }
     footer { color: #6b7089; font-size: 0.78rem; margin-top: 2.5rem; }
+    form.picker {
+        align-items: center; display: flex; flex-wrap: wrap; gap: 0.6rem;
+        margin: 0.4rem 0 1rem;
+    }
+    form.picker label { color: #8d92ad; font-size: 0.85rem; }
+    form.picker select {
+        background: #1e2140; border: 1px solid #2c3055; border-radius: 8px;
+        color: #e9eaf0; font-size: 0.9rem; min-width: 18rem;
+        padding: 0.4rem 0.5rem;
+    }
+    form.picker button {
+        background: #2b3a63; border: 1px solid #4a6bb0; border-radius: 8px;
+        color: #dce7ff; padding: 0.4rem 0.7rem;
+    }
+    .grid .card {
+        background: #1e2140; border: 1px solid #2c3055; border-radius: 12px;
+        padding: 1rem 1.1rem; transition: transform 0.15s ease;
+    }
+    .grid .card:hover { transform: translateY(-2px); border-color: #4a6bb0; }
+    .grid .card .box {
+        color: #8d92ad; font-size: 0.7rem; letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+    .grid .card h3 { font-size: 1.05rem; margin: 0.35rem 0 0.45rem; }
+    .grid .card .desc { color: #b6bad0; font-size: 0.85rem; line-height: 1.45; }
+    .grid .card .desc code {
+        background: #23264a; border-radius: 4px; padding: 0 0.25rem;
+    }
+    .grid .card .src {
+        color: #6b7089; font-family: ui-monospace, monospace; font-size: 0.68rem;
+        margin-top: 0.7rem; word-break: break-all;
+    }
 </style>
 </head>
 <body>
@@ -239,6 +271,69 @@ def _record_row(record: Record, domain_key: str, with_body: bool = False) -> str
     )
 
 
+def render_card(record: Record, domain_key: str) -> str:
+    """Render one record as a gallery card (the deck's card, driven by a Record)."""
+    target = record.href or (
+        f"/{html.escape(domain_key)}/{html.escape(record.id, quote=True)}"
+    )
+    box_line = " / ".join(
+        html.escape(str(badge)) for badge in record.badges if str(badge).strip()
+    )
+    desc = rich(record.subtitle) if record.subtitle else ""
+    path = next(
+        (
+            str(value)
+            for key, value in record.fields
+            if str(key) in ("path", "file") and str(value).strip()
+        ),
+        "",
+    )
+    meta = f'<div class="src">{html.escape(path)}</div>' if path else ""
+    return (
+        '<div class="card">'
+        f'<div class="box">{box_line}</div>'
+        f'<h3><a href="{html.escape(target, quote=True)}">'
+        f"{html.escape(record.title)}</a></h3>"
+        f'<div class="desc">{desc}</div>'
+        f"{meta}</div>"
+    )
+
+
+def render_picker(picker: Picker, domain_key: str) -> str:
+    """Render a collection's dropdown as a plain GET form."""
+    options = [
+        '<option value=""{}>{}</option>'.format(
+            "" if picker.selected else " selected", html.escape(picker.all_label)
+        )
+    ]
+    offered = {value for value, _label in picker.options}
+    if picker.selected and picker.selected not in offered:
+        # a filter the dropdown cannot offer (a category path, or a value that no
+        # longer exists) still has to be visible, or the page lies about its state
+        selected_value = html.escape(picker.selected, quote=True)
+        options.append(
+            f'<option value="{selected_value}" selected disabled>'
+            f"{html.escape(picker.selected)} (current filter)</option>"
+        )
+    for value, label in picker.options:
+        selected = " selected" if value == picker.selected else ""
+        options.append(
+            f'<option value="{html.escape(value, quote=True)}"{selected}>'
+            f"{html.escape(label)}</option>"
+        )
+    key = html.escape(picker.query_key, quote=True)
+    return (
+        '<form class="picker" method="get" action="/'
+        f'{html.escape(domain_key, quote=True)}">'
+        f'<label for="{key}">{html.escape(picker.label)}</label>'
+        f'<select id="{key}" name="{key}" onchange="this.form.submit()">'
+        + "".join(options)
+        + "</select>"
+        '<noscript><button type="submit">Apply</button></noscript>'
+        "</form>"
+    )
+
+
 def render_collection(collection: Collection, domain_key: str) -> str:
     """Render one collection: counts, provenance, notes and its records."""
     extras = "".join(
@@ -261,10 +356,16 @@ def render_collection(collection: Collection, domain_key: str) -> str:
     sources_block = (
         f'<div class="sources">read from: {sources}</div>' if sources else ""
     )
-    rows = (
-        "".join(_record_row(record, domain_key) for record in collection.records)
-        or '<p class="empty">no records</p>'
-    )
+    if collection.display == "cards":
+        cards = "".join(
+            render_card(record, domain_key) for record in collection.records
+        )
+        rows = f'<div class="grid">{cards}</div>' if cards else ""
+    else:
+        rows = "".join(_record_row(record, domain_key) for record in collection.records)
+    if not rows:
+        rows = '<p class="empty">no records</p>'
+    picker = render_picker(collection.picker, domain_key) if collection.picker else ""
     as_of = (
         f'<span class="meta">as of {html.escape(collection.as_of)}</span>'
         if collection.as_of
@@ -279,7 +380,7 @@ def render_collection(collection: Collection, domain_key: str) -> str:
         f'<span class="headline">{collection.count.value:,}</span>'
         f'<span class="def">{html.escape(collection.count.definition)}</span>'
         f"{shown}{extras}{as_of}</div>"
-        f"{notes_block}{rows}{sources_block}"
+        f"{notes_block}{picker}{rows}{sources_block}"
         "</section>"
     )
 

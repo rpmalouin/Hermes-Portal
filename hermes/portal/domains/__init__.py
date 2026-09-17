@@ -1,9 +1,13 @@
 """Domain adapters, and the registry that assembles them.
 
-One module per domain, mirroring how ``hermes/web`` is one module per view.  A
-new domain is a new module here plus a line in :func:`default_registry`; nothing
-else in the portal changes, because everything downstream talks to
-:class:`~hermes.portal.model.Domain`.
+One module per domain.  A new domain is a new module here plus a line in
+:func:`default_registry`; nothing else in the portal changes, because everything
+downstream talks to :class:`~hermes.portal.model.Domain`.
+
+The data layer each adapter needs already exists elsewhere and is imported rather
+than copied: :mod:`hermes.core.skill_trees` for the skill trees (shared with
+nothing now that the Skill Deck is retired, but still view-free on principle), and
+:mod:`hermes.portal.sources` for read-only databases, files and formatting.
 """
 
 from __future__ import annotations

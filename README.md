@@ -14,6 +14,7 @@ hermes/
     registry.py      SkillRegistry: name -> Skill, de-duplication, by_box()
     executor.py      argv construction + subprocess.run (no shell, never shell=True)
     runtime.py       Runtime: load once, run by name; profile loading
+    skill_trees.py   skill discovery: roots, SKILL.md frontmatter, dedupe, filter
   skills/
     example_skill/
       skill.json     manifest
@@ -23,9 +24,6 @@ hermes/
   cli/
     __init__.py
     shell.py         interactive `hermes>` REPL
-  web/
-    __init__.py
-    skill_deck.py    Skill Deck web UI: this project + the running Hermes agent
   portal/            read-only drill-down over everything Hermes keeps
     __init__.py
     model.py         Domain / Collection / Record / Count (counts carry rules)
@@ -40,8 +38,9 @@ hermes/
       cron.py        jobs.json, executions.db, output reports
 tests/
   __init__.py
-  test_smoke.py      98 tests, unittest only
-  test_portal.py     51 tests, hermetic fake Hermes root
+  test_smoke.py      43 tests, the framework (manifest, loader, registry, executor)
+  test_skill_trees.py 23 tests, the skill data layer on a fake Hermes tree
+  test_portal.py     59 tests, the portal incl. the skills gallery
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -264,106 +263,36 @@ A profile is a small JSON document describing how to start the framework:
 `"skills_dir": "skills"` to `hermes/skills`, and passes the profile timeout to
 every skill it runs.
 
-## Web Skill Deck
+## Web views
 
-`hermes/web/` is one module per web view; `skill_deck.py` is the first. A new
-view is a new module beside it, added to `hermes/web/__init__.py`'s `__all__` and,
-if it deserves a command, to `[project.scripts]` in `pyproject.toml`.
+There is now **one web server**: the portal (below). The Skill Deck was folded into
+it -- its card grid and box dropdown are the portal's skills gallery -- so the module
+`hermes/web/skill_deck.py`, the `python -m hermes.web.skill_deck` entry point and the
+separate server are gone. What moved where:
 
-```sh
-python3 -m hermes.web.skill_deck      # this project + the running Hermes agent
-python3 -m hermes.web.skill_deck --list   # print what would be shown, then exit
-.venv/bin/hermes-deck --port 9000     # installed console script, any directory
-```
+| Was | Now |
+| --- | --- |
+| the deck's card grid + box dropdown | the portal's skills gallery (`display="cards"` + a `Picker`) |
+| `skill_deck.discover_skills` / `resolve_hermes_roots` / `split_frontmatter` | `hermes/core/skill_trees.py` (view-free) |
+| `skill_deck.filter_cards` (box **or** category path) | `skill_trees.filter_cards`, now used by the portal too, so `?box=mlops/evaluation` works there as well |
+| `python -m hermes.web.skill_deck --box creative` | `python -m hermes.portal` then `/skills?box=creative` |
+| `hermes-deck` | still exists as an **alias** that launches the portal |
 
-`/` renders the card grid, `/skills.json` returns the same cards as JSON so a
-script can check the load instead of counting `<div>`s. Flags: `--root`,
-`--hermes-home`, `--profile`, `--all-profiles`, `--no-framework`, `--box`,
-`--list`, `--host`, `--port`.
+One behaviour changed on purpose: a box filter that matches nothing used to be
+silently ignored, which showed unfiltered skills under a filtered URL. It now
+reports zero and says why. Skills are also no longer counted with this project's own
+`example_skill` mixed in -- the portal shows what Hermes has, not what this repo ships.
 
-### Filtering by box
+**Skills gallery**
 
-`--box` keeps one box of the deck and is repeatable; a value with a `/` in it is
-a **category path**, which narrows further:
-
-```sh
-python3 -m hermes.web.skill_deck --list --box software-development  # 28 skills
-python3 -m hermes.web.skill_deck --list --box mlops/evaluation      # 2 skills
-python3 -m hermes.web.skill_deck --box creative --box apple         # 21, 133 hidden
-python3 -m hermes.web.skill_deck --list                             # every box + count
-```
-
-Matching is case-insensitive on the card's box (`creative`) or its category path
-(`creative/ascii-art`); a category path also selects everything below it. The
-page and `/skills.json` both report the active filter and how many cards it hid
-(`hidden_by_filter`), and the *source* counts keep reporting what every root
-contained, so a filtered deck still says how much of the whole it is showing.
-`--list` with no `--box` prints the box breakdown, which is the easiest way to
-find a name to pass in.
-
-### The box dropdown
-
-The page header carries a **Box** dropdown listing every box with its count, plus
-`All boxes (154)`. It is a plain GET form -- `onchange` submits it, and a
-`<noscript>` Apply button covers browsers with JavaScript off -- so the filter
-lands in the URL and can be bookmarked or shared:
-
-```
-http://127.0.0.1:8765/?box=creative
-http://127.0.0.1:8765/?box=creative&box=apple      # repeatable
-http://127.0.0.1:8765/skills.json?box=mlops/evaluation
-http://127.0.0.1:8765/?box=                         # blank clears the filter
-```
-
-`?box=` works on `/` and `/skills.json` alike, and the **URL beats `--box`**:
-the flag only decides which view the server starts on, so choosing "All boxes"
-in the dropdown really does clear a `--box` you launched with.
-
-Two details keep the control honest. Options come from the *pre-filter*
-inventory, so every box stays reachable after a filter is applied rather than
-disappearing once selected; and when two or more boxes are active at once
-(reachable only from `--box creative --box apple`) the picker shows a disabled
-`boxes: creative, apple` entry instead of pretending one of them is the whole
-selection. Nothing here duplicates the matching rule -- the dropdown sends
-`?box=`, the server calls the same `filter_cards()` the CLI uses, and one
-filesystem scan serves every view.
-
-Which skills appear:
-
-| Source | Read from | Count on the machine this was built on |
-| --- | --- | --- |
-| framework | `<root>/skills/*/skill.json` | 1 (`example_skill`) |
-| hermes | `$HERMES_HOME/skills/**/SKILL.md` | the running profile's whole set |
-| extra profiles | `$HERMES_HOME/profiles/*/skills`, with `--all-profiles` | further unique names |
-
-Counts move as skills are added or removed — during the session this deck was
-built, the running profile went from 152 to 153 skills while the server was up,
-and the deck simply reported the new number. Treat any figure here as a
-snapshot, not a constant.
-
-Hermes sets `$HERMES_HOME` itself: in a live session it points at the running
-profile directory, whose `skills/` directory *is* the skill set the agent has.
-With no such variable the deck falls back to `~/.hermes`. `--all-profiles` also
-finds that directory's siblings whether `$HERMES_HOME` is a hermes root or a
-single profile.
-
-Three details decide whether the count is right:
-
-* **Symlinks are followed** (`os.walk(followlinks=True)`). Skills symlinked in
-  from another checkout are invisible to `Path.rglob`; the deck finds them.
-* **Cards are de-duplicated** by frontmatter `name` and by real path. The same
-  skill is reachable through several profiles: walking everything unreconciled
-  yields hundreds of paths for ~150 names.
-* **Only top-level frontmatter scalars are read** (`name`, `description`, title
-  from the first `#` heading). Nested blocks such as `metadata:` are ignored
-  rather than guessed at, and every interpolated value is HTML-escaped before
-  any markup is added, so a skill description containing `<`, `&` or backticks
-  renders as text.
-
-The response also lists every source it scanned with its count, and marks a
-source `MISSING` when the directory is absent, so an empty or short deck is
-self-explaining.
-
+`/skills` is the deck's successor: one card per skill, a **Box** dropdown listing
+every box with its count, and the filter in the URL (`?box=creative`,
+`?box=mlops/evaluation` for a category path, repeatable). It keeps everything the
+portal insists on -- the count's definition, the extra counts that differ from it,
+the sources and the read time all stay on the page. The dropdown is drawn from the
+*unfiltered* inventory, so every box stays reachable after one is applied, and a
+filter the dropdown cannot offer (a category path, or a value that matched nothing)
+is shown as a disabled "current filter" entry rather than being hidden.
 ## Hermes Portal
 
 A second web view, and the start of the system around everything Hermes keeps. It
@@ -416,7 +345,7 @@ through its own MCP tools.
 
 ```sh
 cd <project-root>
-python3 -m unittest discover -s tests -t .   # 149 tests, ~6.0s
+python3 -m unittest discover -s tests -t .   # 125 tests, ~3.5s
 python3 -m unittest tests.test_smoke         # same suite
 python3 tests/test_smoke.py                  # works directly too
 

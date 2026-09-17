@@ -21,8 +21,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...web import skill_deck
-from ..model import Collection, Count, Domain, Record, Source, build_collection
+from ...core import skill_trees
+from ..model import (
+    Collection,
+    Count,
+    Domain,
+    Picker,
+    Record,
+    Source,
+    build_collection,
+)
 from ..sources import (
     as_of,
     fmt_ago,
@@ -43,11 +51,10 @@ BODY_CAP = 4000
 class _Snapshot:
     """What one walk of every skill root found, deduped by name."""
 
-    roots: list[skill_deck.SkillRoot]
-    by_name: dict[str, skill_deck.Card]
+    roots: list[skill_trees.SkillRoot]
+    by_name: dict[str, skill_trees.Card]
     paths_total: int
-    duplicates_by_name: int
-    duplicates_by_path: int
+    duplicates_dropped: int
     per_root: list[tuple[str, Path, int, bool]]  # label, path, found, present
 
 
@@ -59,42 +66,29 @@ def _snapshot(
     """Discover every skill once, keeping the counts needed to be honest."""
     shared_root = hermes_root(hermes_home) / "skills"
     roots = [
-        skill_deck.SkillRoot(
+        skill_trees.SkillRoot(
             "shared skills root"
             if skill_root.path == shared_root
             else skill_root.label,
             skill_root.path,
         )
-        for skill_root in skill_deck.resolve_hermes_roots(
+        for skill_root in skill_trees.resolve_hermes_roots(
             hermes_home=hermes_home, profile=profile, all_profiles=all_profiles
         )
     ]
-    by_name: dict[str, skill_deck.Card] = {}
-    seen_paths: set[str] = set()
-    paths_total = 0
-    dup_name = dup_path = 0
-    per_root: list[tuple[str, int, bool]] = []
-
+    found: list[skill_trees.Card] = []
+    per_root: list[tuple[str, Path, int, bool]] = []
     for root in roots:
-        cards = skill_deck.discover_skills(root.path, root.label)
+        cards = skill_trees.discover_skills(root.path, root.label)
         per_root.append((root.label, root.path, len(cards), root.path.is_dir()))
-        for card in cards:
-            paths_total += 1
-            if card.path in seen_paths:
-                dup_path += 1
-                continue
-            seen_paths.add(card.path)
-            if card.name in by_name:
-                dup_name += 1
-                continue
-            by_name[card.name] = card
+        found.extend(cards)
 
+    kept, dropped = skill_trees.dedupe_cards(found)
     return _Snapshot(
         roots=roots,
-        by_name=by_name,
-        paths_total=paths_total,
-        duplicates_by_name=dup_name,
-        duplicates_by_path=dup_path,
+        by_name={card.name: card for card in kept},
+        paths_total=len(found),
+        duplicates_dropped=dropped,
         per_root=per_root,
     )
 
@@ -181,10 +175,15 @@ def _boxes_collection(snapshot: _Snapshot) -> Collection:
 
 
 def _skill_records(snapshot: _Snapshot, box: str | None = None) -> list[Record]:
-    """Every unique skill as a record, optionally filtered to one box."""
-    cards = [
-        card for card in snapshot.by_name.values() if box is None or card.box == box
-    ]
+    """Every unique skill as a record, optionally filtered to a box or category.
+
+    The match uses :func:`hermes.core.skill_trees.filter_cards`, the same rule the
+    Skill Deck used, so ``?box=creative`` takes the whole box and
+    ``?box=mlops/evaluation`` narrows to one branch -- one filter, one meaning.
+    """
+    cards = list(snapshot.by_name.values())
+    if box:
+        cards, _hidden = skill_trees.filter_cards(cards, [box])
     cards.sort(key=lambda card: (card.box, card.name))
     return [
         Record(
@@ -208,35 +207,65 @@ def _skill_records(snapshot: _Snapshot, box: str | None = None) -> list[Record]:
     ]
 
 
+def skills_picker(snapshot: _Snapshot, selected: str = "") -> Picker:
+    """The box dropdown: every box with its count, whatever is filtered now.
+
+    Options come from the *unfiltered* inventory, so a box stays reachable after
+    another one has been applied -- the trap that made the old deck need a
+    separate ``inventory`` field in its page data.
+    """
+    return Picker(
+        query_key="box",
+        label="Box",
+        options=tuple((name, f"{name} ({count})") for name, count in _boxes(snapshot)),
+        all_label=f"All boxes ({len(snapshot.by_name)})",
+        selected=selected,
+    )
+
+
 def _skills_collection(snapshot: _Snapshot, box: str | None = None) -> Collection:
-    """Every unique skill, optionally filtered to one box."""
+    """Every unique skill, optionally filtered to a box or category path.
+
+    This is the gallery: ``display="cards"`` asks the renderer for the card grid,
+    and the picker travels with the collection so the page can re-filter itself.
+    """
     definition = (
         "unique frontmatter names across all roots"
         if box is None
-        else f"unique frontmatter names in box {box!r}"
+        else f"unique frontmatter names matching {box!r}"
     )
+    records = _skill_records(snapshot, box)
+    notes: tuple[str, ...] = ()
+    if box and not records:
+        notes = (
+            f"nothing matches {box!r}: it is neither a box nor a category path. "
+            "The Boxes collection lists what exists.",
+        )
+    extra = (
+        Count(len(snapshot.by_name), "unique names across all roots (unfiltered)"),
+        Count(
+            snapshot.paths_total,
+            "SKILL.md files on disk (symlinks followed, same skill once per root)",
+        ),
+        Count(len(_boxes(snapshot)), "boxes (first path component)"),
+        Count(snapshot.duplicates_dropped, "duplicates dropped (same name or path)"),
+    )
+    if box:
+        extra = extra[:2]
     return build_collection(
         "skills" if box is None else f"box-{box}",
-        "Skills" if box is None else f"Skills in {box}",
-        "Every skill the running Hermes has, deduped by frontmatter name.",
+        "Skills" if box is None else f"Skills matching {box}",
+        "Every skill the running Hermes has, deduped by frontmatter name. "
+        "Open one for its frontmatter and reference files.",
         definition,
-        _skill_records(snapshot, box),
+        records,
         cap=SKILLS_CAP,
         sources=_sources(snapshot),
-        extra_counts=(
-            Count(len(snapshot.by_name), "unique names across all roots (unfiltered)"),
-            Count(
-                snapshot.paths_total,
-                "SKILL.md files on disk (symlinks followed, same skill once per root)",
-            ),
-            Count(len(_boxes(snapshot)), "boxes (first path component)"),
-        )
-        if box is None
-        else (
-            Count(len(snapshot.by_name), "unique names across all roots (unfiltered)"),
-            Count(snapshot.paths_total, "SKILL.md files on disk (symlinks followed)"),
-        ),
+        extra_counts=extra,
+        notes=notes,
         as_of=as_of(),
+        display="cards",
+        picker=skills_picker(snapshot, selected=box or ""),
     )
 
 
@@ -292,8 +321,7 @@ def build_domain(
         straight into it.
         """
         box = ((filters or {}).get("box") or "").strip()
-        known = {name for name, _count in _boxes(snapshot)}
-        narrow = box if box in known else None
+        narrow = box or None
         return [
             _roots_collection(snapshot),
             _boxes_collection(snapshot),
@@ -322,7 +350,7 @@ def build_domain(
             return None
         path = Path(card.path)
         text, truncated, error = read_text(path, BODY_CAP)
-        fields, body = skill_deck.split_frontmatter(text) if text else ({}, "")
+        fields, body = skill_trees.split_frontmatter(text) if text else ({}, "")
         try:
             stat = path.stat()
             size, modified = human_size(stat.st_size), fmt_ago(stat.st_mtime)
@@ -375,7 +403,7 @@ def build_domain(
             return []
         path = Path(card.path)
         text, _truncated, _error = read_text(path, BODY_CAP * 4)
-        fields, _body = skill_deck.split_frontmatter(text)
+        fields, _body = skill_trees.split_frontmatter(text)
 
         front = build_collection(
             "frontmatter",

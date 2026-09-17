@@ -647,7 +647,7 @@ class TestSkillsDomain(unittest.TestCase):
         collections = self.domain.collections({"box": "creative"})
         narrowed = collections[-1]
         self.assertEqual(narrowed.count.value, 3)
-        self.assertIn("box 'creative'", narrowed.count.definition)
+        self.assertIn("matching 'creative'", narrowed.count.definition)
         self.assertEqual(
             count_map(narrowed.extra_counts)[
                 "unique names across all roots (unfiltered)"
@@ -655,9 +655,12 @@ class TestSkillsDomain(unittest.TestCase):
             4,
         )
 
-    def test_unknown_box_filter_is_ignored_rather_than_empty(self) -> None:
+    def test_unknown_box_filter_reports_zero_instead_of_ignoring_itself(self) -> None:
         collections = self.domain.collections({"box": "no-such-box"})
-        self.assertEqual(collections[-1].count.value, 4)
+        narrowed = collections[-1]
+        self.assertEqual(narrowed.count.value, 0)
+        self.assertIn("matching 'no-such-box'", narrowed.count.definition)
+        self.assertTrue(any("nothing matches" in note for note in narrowed.notes))
 
     def test_detail_has_fields_and_the_document_body(self) -> None:
         record = self.domain.detail("gamma")
@@ -1013,7 +1016,7 @@ class TestServer(unittest.TestCase):
                 self.assertIn("filtered by box=creative", page)
                 # the definition is escaped on the way out, apostrophes included
                 self.assertIn(
-                    "unique frontmatter names in box &#x27;creative&#x27;", page
+                    "unique frontmatter names matching &#x27;creative&#x27;", page
                 )
 
                 status, _ctype, page = fetch(f"{base}/skills/alpha")
@@ -1102,6 +1105,119 @@ class TestServer(unittest.TestCase):
                 server.describe(server.default_registry(hermes_home=root))
                 + "note per-profile stores",
             )
+
+
+class TestSkillsGallery(unittest.TestCase):
+    """The gallery view: the retired deck's card grid and dropdown, on a Collection.
+
+    These are the behaviours the Skill Deck used to own -- cards, a box picker fed
+    from the *unfiltered* inventory, and the filter note -- now driven by what the
+    skills collection declares (``display="cards"`` plus a ``Picker``) and rendered
+    by the portal's generic renderer.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = make_hermes_root(Path(self._tmp.name))
+        self.registry = server.default_registry(hermes_home=self.root)
+        self.domain = self.registry.get("skills")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def gallery(self, filters: dict[str, str] | None = None) -> Collection:
+        """The gallery collection, optionally filtered."""
+        collections = self.registry.safe_collections(self.domain, filters)
+        return next(
+            c
+            for c in collections
+            if c.key.startswith("skills") or c.key.startswith("box-")
+        )
+
+    def test_collection_declares_the_gallery_and_a_picker(self) -> None:
+        gallery = self.gallery()
+        self.assertEqual(gallery.display, "cards")
+        self.assertIsNotNone(gallery.picker)
+        self.assertEqual(gallery.picker.query_key, "box")
+        self.assertEqual(gallery.picker.label, "Box")
+        self.assertEqual(gallery.picker.all_label, "All boxes (4)")
+        self.assertEqual(dict(gallery.picker.options)["creative"], "creative (3)")
+
+    def test_renderer_draws_cards_and_the_dropdown(self) -> None:
+        page = render.render_collection(self.gallery(), "skills")
+        self.assertEqual(page.count('class="card"'), 4)
+        self.assertIn('<form class="picker" method="get" action="/skills">', page)
+        self.assertIn('name="box"', page)
+        self.assertIn("onchange=", page)
+        self.assertIn('value="" selected>All boxes (4)</option>', page)
+        self.assertIn("creative (3)</option>", page)
+        self.assertIn("unique frontmatter names across all roots", page)
+
+    def test_picker_offers_every_box_even_when_one_is_applied(self) -> None:
+        page = render.render_collection(self.gallery({"box": "creative"}), "skills")
+        self.assertEqual(page.count('class="card"'), 3)
+        # both boxes remain reachable, and the applied one is the one marked
+        self.assertIn('value="creative" selected>creative (3)</option>', page)
+        self.assertIn("software-development (1)</option>", page)
+        self.assertNotIn('value="" selected>', page)
+
+    def test_category_path_filter_is_shown_even_though_the_dropdown_cannot_offer_it(
+        self,
+    ) -> None:
+        gallery = self.gallery({"box": "creative/alpha"})
+        self.assertEqual(gallery.count.value, 1)
+        self.assertIn("creative/alpha", gallery.count.definition)
+        page = render.render_collection(gallery, "skills")
+        self.assertIn(
+            '<option value="creative/alpha" selected disabled>'
+            "creative/alpha (current filter)</option>",
+            page,
+        )
+
+    def test_a_filter_that_matches_nothing_says_so(self) -> None:
+        gallery = self.gallery({"box": "no-such-box"})
+        self.assertEqual(gallery.count.value, 0)
+        self.assertIn("nothing matches", gallery.notes[0])
+        page = render.render_collection(gallery, "skills")
+        self.assertIn("no records", page)
+        self.assertIn("nothing matches", page)
+
+    def test_cards_escape_their_text_and_link_to_details(self) -> None:
+        evil = Record(
+            id="evil",
+            title="<script>alert(1)</script>",
+            subtitle="uses & <b>tags</b>",
+            badges=("box",),
+            fields=(("path", "/tmp/<img src=x>"),),
+            href="/skills/evil",
+        )
+        page = render.render_card(evil, "skills")
+        self.assertNotIn("<script>alert", page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertIn("&amp;", page)
+        self.assertNotIn("<img src=x>", page)
+        self.assertIn('href="/skills/evil"', page)
+
+    def test_gallery_is_capped_but_reports_the_whole_count(self) -> None:
+        records = [Record(id=f"r{n}", title=f"r{n}") for n in range(7)]
+        collection = build_collection(
+            "skills", "Skills", "d", "the rule", records, cap=3, display="cards"
+        )
+        page = render.render_collection(collection, "skills")
+        self.assertIn("showing 3 of 7", page)
+        self.assertEqual(page.count('class="card"'), 3)
+
+    def test_server_serves_the_gallery_with_a_filter(self) -> None:
+        with run_portal(self.root) as base:
+            _status, _ctype, page = fetch(f"{base}/skills?box=creative")
+            _status, _ctype, json_body = fetch(f"{base}/skills.json?box=creative")
+        self.assertIn('class="card"', page)
+        self.assertIn("filtered by box=creative", page)
+        payload = json.loads(json_body)
+        gallery = next(c for c in payload["collections"] if c["key"].startswith("box-"))
+        self.assertEqual(gallery["display"], "cards")
+        self.assertEqual(gallery["count"]["value"], 3)
+        self.assertEqual(gallery["picker"]["selected"], "creative")
 
 
 if __name__ == "__main__":
