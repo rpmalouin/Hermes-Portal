@@ -535,7 +535,17 @@ class TestRegistryInvariants(BaseP1):
     def test_all_domains_are_registered(self) -> None:
         self.assertEqual(
             self.registry.keys(),
-            ["cron", "graph", "health", "logs", "sessions", "skills", "usage", "vault"],
+            [
+                "cron",
+                "graph",
+                "health",
+                "logs",
+                "memory",
+                "sessions",
+                "skills",
+                "usage",
+                "vault",
+            ],
         )
 
     def test_every_collection_count_matches_its_records(self) -> None:

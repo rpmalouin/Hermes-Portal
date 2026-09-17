@@ -1074,6 +1074,7 @@ class TestServer(unittest.TestCase):
                         "graph",
                         "health",
                         "logs",
+                        "memory",
                         "sessions",
                         "skills",
                         "usage",

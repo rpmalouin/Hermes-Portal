@@ -16,7 +16,17 @@ from pathlib import Path
 
 from ..model import DomainRegistry
 from ..sources import hermes_root
-from . import cron, graph, health, logs, sessions, skills, usage, vault
+from . import (
+    cron,
+    graph,
+    health,
+    logs,
+    memory,
+    sessions,
+    skills,
+    usage,
+    vault,
+)
 
 __all__ = ["cron", "default_registry", "sessions", "skills"]
 
@@ -65,4 +75,5 @@ def default_registry(
     registry.register(logs.build_domain(root))
     registry.register(vault.build_domain(vault_root))
     registry.register(graph.build_domain(hermes_home=root, graph_db=graph_db))
+    registry.register(memory.build_domain(hermes_home=hermes_home))
     return registry

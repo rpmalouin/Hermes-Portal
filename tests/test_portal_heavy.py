@@ -599,7 +599,7 @@ class GraphTestCase(unittest.TestCase):
 class RegistryTestCase(unittest.TestCase):
     """The registry the server actually builds."""
 
-    def test_registry_has_the_eight_domains(self) -> None:
+    def test_the_registry_lists_the_domains_it_has(self) -> None:
         registry = default_registry()
         self.assertEqual(
             set(registry.keys()),
@@ -608,6 +608,7 @@ class RegistryTestCase(unittest.TestCase):
                 "graph",
                 "health",
                 "logs",
+                "memory",
                 "sessions",
                 "skills",
                 "usage",

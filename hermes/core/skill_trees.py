@@ -198,7 +198,7 @@ def default_hermes_home() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".hermes"
 
 
-def _profile_dirs(home: Path) -> list[Path]:
+def profile_dirs(home: Path) -> list[Path]:
     """Profile directories for *home*, whether it is a hermes root or a profile.
 
     ``$HERMES_HOME`` points at a hermes *root* in some launches (``~/.hermes``)
@@ -252,7 +252,7 @@ def resolve_hermes_roots(
         roots.append(SkillRoot("running hermes", home / "skills"))
 
     if all_profiles:
-        for profile_dir in _profile_dirs(home):
+        for profile_dir in profile_dirs(home):
             if profile and profile_dir.name == profile:
                 continue  # already covered by the named-profile root
             label = f"profile {profile_dir.name}"

@@ -48,7 +48,7 @@ from .taxonomy import coverage
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8087
-FILTER_KEYS = ("box", "model", "provider")
+FILTER_KEYS = ("box", "model", "provider", "profile")
 MAX_BODY_BYTES = 8192
 JSON_TYPES = ("application/json", "")
 
