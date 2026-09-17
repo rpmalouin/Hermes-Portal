@@ -385,9 +385,12 @@ code-review graph priced that shape: the factory in `memory.py` reached **793 li
 could call by name. `domains/base.py` now holds a `SnapshotDomain`: the snapshot is an
 attribute read once behind a lock, helpers are named methods, and the plumbing to a
 `Domain` is written once. `build_domain(hermes_home=...)` stays each module's entry point,
-so this converts one domain per phase. `memory.py` is the first: 1,323 lines became
-**1,060** for the domain plus **320** for a new `memory_files.py` that owns the file
-format and the history layer, and its `build_domain` is four lines.
+so this converts one domain per phase, worst first. `memory.py`: 1,323 lines became **1,061**
+for the domain plus **319** for a new `memory_files.py` that owns the file format and the
+history layer, and its 793-line factory is **12** lines. `graph.py` followed: its 567-line
+factory is **9** lines, and since every query there is already narrow and indexed it takes
+no snapshot at all — the base's snapshot machinery is optional, and the one slow number
+(`count(*)` over 1.5M edges) keeps the TTL cache it already had.
 
 The conversion found a real bug in itself: those helpers take the snapshot they are
 *handed*, because that is how a filtered view reaches them, and the first cut had them

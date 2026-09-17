@@ -36,10 +36,16 @@ Snapshot = TypeVar("Snapshot")
 class SnapshotDomain(Generic[Snapshot]):
     """A domain that reads its sources once and serves every page from that result.
 
-    Subclasses set :attr:`key`, :attr:`title` and :attr:`summary`, implement
-    :meth:`read` to produce the snapshot, and publish collections by implementing
-    :meth:`overview` and, as needed, :meth:`collections`, :meth:`detail`,
-    :meth:`detail_sections` and :meth:`search`.
+    Subclasses set :attr:`key`, :attr:`title` and :attr:`summary`; publish
+    collections by implementing :meth:`overview` and, as needed,
+    :meth:`collections`, :meth:`detail`, :meth:`detail_sections` and
+    :meth:`search`; and implement :meth:`read` **if** they read their sources
+    once.
+
+    The snapshot is optional on purpose.  A domain that queries an index per
+    request has nothing to snapshot -- the code graph is that case, and it is
+    fast because every query is narrow -- and forcing one would mean inventing
+    a cache that its own TTL logic does better.
     """
 
     key: str = ""

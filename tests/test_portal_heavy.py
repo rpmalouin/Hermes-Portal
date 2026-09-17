@@ -614,5 +614,107 @@ class RegistryTestCase(unittest.TestCase):
             self.assertTrue(domain.summary, key)
 
 
+class GraphPrimitivesTestCase(unittest.TestCase):
+    """The graph domain's helpers, called by name.
+
+    The code-review graph flagged ``_get`` as the most-connected untested node in the
+    project (degree 85) and the collection builders right behind it -- all closures at
+    the time, so no test could reference them.  They are methods now, so this calls
+    them.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.db = make_graph_db(Path(cls._tmp.name) / "graph.db")
+        cls.domain = graph_domain.GraphDomain(graph_db=cls.db)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def test_get_reads_a_row_and_tolerates_a_missing_column(self) -> None:
+        con, error = sources.open_sqlite(self.db)
+        self.assertFalse(error)
+        assert con is not None
+        row = con.execute("select name, qualified_name from nodes limit 1").fetchone()
+        self.assertEqual(graph_domain._get(row, "name"), "get")
+        self.assertEqual(graph_domain._get(row, "kind"), "\u2014")
+        self.assertEqual(graph_domain._get(row, "name", "fallback"), "get")
+        self.assertEqual(graph_domain._get({"name": None}, "name", "empty"), "empty")
+        con.close()
+
+    def test_graph_path_points_inside_the_hermes_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "hermes"
+            (root / "cron").mkdir(parents=True)
+            (root / "cron" / "jobs.json").write_text('{"jobs": []}', encoding="utf-8")
+            self.assertEqual(
+                graph_domain.graph_path(root),
+                root / ".code-review-graph" / "graph.db",
+            )
+
+    def test_close_tolerates_nothing(self) -> None:
+        self.assertIsNone(graph_domain._close(None))
+
+    def test_open_is_read_only(self) -> None:
+        con, error = self.domain._open()
+        self.assertFalse(error)
+        assert con is not None
+        with self.assertRaises(sqlite3.OperationalError):
+            con.execute("delete from metadata")
+        graph_domain._close(con)
+
+    def test_cheap_counts_come_from_the_tables(self) -> None:
+        counts = self.domain._cheap_counts()
+        self.assertEqual(counts["nodes"], 4)
+        self.assertEqual(counts["flows"], 2)
+        self.assertEqual(counts["communities"], 2)
+
+    def test_counts_include_edges_and_a_stamp_when_they_block(self) -> None:
+        counts = self.domain._counts(block=True)
+        self.assertEqual(counts["edges"], 3)
+        self.assertTrue(counts["_stamp"])
+
+    def test_counts_do_not_block_when_the_cache_is_cold(self) -> None:
+        """The page must not wait: a cold cache answers without the edge count."""
+        fresh = graph_domain.GraphDomain(graph_db=self.db)
+        counts = fresh._counts(block=False)
+        self.assertIn("edges", counts)
+        self.assertIsNone(counts["edges"])
+
+    def test_metadata_and_node_lookup(self) -> None:
+        con, _error = self.domain._open()
+        assert con is not None
+        self.assertEqual(self.domain._metadata(con)["schema_version"], "9")
+        node = self.domain._node(con, "ProcessRegistry.get")
+        self.assertEqual(graph_domain._get(node, "kind"), "Function")
+        self.assertIsNone(self.domain._node(con, "NoSuch.node"))
+        graph_domain._close(con)
+
+    def test_sources_name_the_store(self) -> None:
+        sources_list = self.domain._sources()
+        self.assertEqual(len(sources_list), 1)
+        self.assertIn("graph.db", sources_list[0].label)
+
+    def test_every_collection_builder_counts_what_it_carries(self) -> None:
+        for collection in (
+            self.domain._build_collection(),
+            self.domain._communities_collection(),
+            self.domain._risky_collection(),
+            self.domain._callers_collection(),
+            self.domain._flows_collection(),
+        ):
+            with self.subTest(collection=collection.key):
+                self.assertTrue(collection.records)
+                if not collection.truncated:
+                    self.assertEqual(collection.count.value, len(collection.records))
+
+    def test_build_domain_still_returns_a_wired_domain(self) -> None:
+        domain = graph_domain.build_domain(graph_db=self.db)
+        self.assertEqual(domain.key, "graph")
+        self.assertEqual(domain.overview().key, "overview")
+
+
 if __name__ == "__main__":
     unittest.main()

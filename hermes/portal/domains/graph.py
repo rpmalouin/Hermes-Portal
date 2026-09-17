@@ -38,6 +38,7 @@ from ..sources import (
     snippet,
     truncate,
 )
+from .base import SnapshotDomain
 
 EDGE_COUNT_TTL = 900.0
 STALE_AFTER_HOURS = 48
@@ -69,43 +70,62 @@ def graph_path(home: Path | None = None) -> Path:
     return hermes_root(home) / ".code-review-graph" / "graph.db"
 
 
-def build_domain(
-    hermes_home: Path | None = None, graph_db: Path | None = None
-) -> Domain:
-    """Build the code graph domain.
+class GraphDomain(SnapshotDomain[None]):
+    """The code-review-graph store, served from narrow indexed queries.
 
-    Args:
-        hermes_home: Hermes home or profile directory.
-        graph_db: Explicit database path; defaults to
-            ``<root>/.code-review-graph/graph.db``.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`.  Reads are narrow and indexed, and
-        the one expensive count is cached with the moment it was taken.
+    This domain does not read a snapshot: every page queries the database, because each
+    query is already narrow and indexed.  What it *does* cache is the one thing that is
+    slow -- ``count(*)`` over 1.5M edges takes seconds, so it is taken once per
+    :data:`EDGE_COUNT_TTL` and returned with the moment it was taken, in the background
+    when a page would otherwise wait.  (The base class's snapshot machinery is optional
+    for exactly this reason.)
     """
-    db_path = Path(graph_db) if graph_db is not None else graph_path(hermes_home)
-    cache = Cache()
 
-    def _open() -> tuple[Any, str]:
-        return open_sqlite(db_path)
+    key = "graph"
+    title = "Code graph"
+    summary = (
+        "Communities, risky nodes and callers from the code-review-graph store Hermes "
+        "rebuilds nightly."
+    )
 
-    def _sources() -> tuple[Source, ...]:
-        return (path_source("graph.db", db_path, note="read-only, narrow queries"),)
+    def __init__(
+        self, hermes_home: Path | None = None, graph_db: Path | None = None
+    ) -> None:
+        """Point at the store; nothing is queried until a page asks.
 
-    def _metadata(con: Any) -> dict[str, str]:
+        Args:
+            hermes_home: Hermes home or profile directory.
+            graph_db: Explicit database path; defaults to
+                ``<root>/.code-review-graph/graph.db``.
+        """
+        super().__init__(hermes_home)
+        self.db_path = (
+            Path(graph_db) if graph_db is not None else graph_path(hermes_home)
+        )
+        self.cache = Cache()
+
+    def _open(self) -> tuple[Any, str]:
+        return open_sqlite(self.db_path)
+
+    def _sources(self) -> tuple[Source, ...]:
+        return (
+            path_source("graph.db", self.db_path, note="read-only, narrow queries"),
+        )
+
+    def _metadata(self, con: Any) -> dict[str, str]:
         rows, _error = query(con, "select key, value from metadata")
         return {str(row[0]): str(row[1]) for row in rows}
 
-    def _edge_count() -> int:
+    def _edge_count(self) -> int:
         """Count the edge table once: 1.5M rows takes seconds, so it is cached."""
-        con, _error = _open()
+        con, _error = self._open()
         value = int(scalar(con, "select count(*) from edges", default=0) or 0)
         _close(con)
         return value
 
-    def _cheap_counts() -> dict[str, int]:
+    def _cheap_counts(self) -> dict[str, int]:
         """The counts that are instant on this database."""
-        con, _error = _open()
+        con, _error = self._open()
         counts = {
             "nodes": int(scalar(con, "select count(*) from nodes", default=0) or 0),
             "flows": int(scalar(con, "select count(*) from flows", default=0) or 0),
@@ -116,22 +136,22 @@ def build_domain(
         _close(con)
         return counts
 
-    def _counts(*, block: bool = False) -> dict[str, Any]:
+    def _counts(self, *, block: bool = False) -> dict[str, Any]:
         """Counts, with the expensive edge count fetched in the background.
 
         A page must not wait seconds for one number: when the cache is cold the
         metric says so and a daemon thread fills it in, stamped with when it was
         taken.  ``block=True`` is for that thread and for a warm-up.
         """
-        counts: dict[str, Any] = _cheap_counts()
+        counts: dict[str, Any] = self._cheap_counts()
         if block:
-            edges, stamp = cache.get("edges", EDGE_COUNT_TTL, _edge_count)
+            edges, stamp = self.cache.get("edges", EDGE_COUNT_TTL, self._edge_count)
         else:
-            edges, stamp = cache.peek("edges", EDGE_COUNT_TTL)
+            edges, stamp = self.cache.peek("edges", EDGE_COUNT_TTL)
             if edges is None:
                 threading.Thread(
-                    target=cache.get,
-                    args=("edges", EDGE_COUNT_TTL, _edge_count),
+                    target=self.cache.get,
+                    args=("edges", EDGE_COUNT_TTL, self._edge_count),
                     name="graph-edge-count",
                     daemon=True,
                 ).start()
@@ -139,16 +159,16 @@ def build_domain(
         counts["_stamp"] = stamp
         return counts
 
-    def _build_collection() -> Collection:
+    def _build_collection(self) -> Collection:
         """The store's own build facts, one record per metadata row."""
-        con, error = _open()
-        metadata = _metadata(con)
+        con, error = self._open()
+        metadata = self._metadata(con)
         _close(con)
         built = metadata.get("last_updated", "")
         age_hours = (age_seconds(built) or 0) / 3600 if built else None
         notes = [note for note in (error,) if note]
-        if not db_path.is_file():
-            notes.append(f"no graph database at {db_path}")
+        if not self.db_path.is_file():
+            notes.append(f"no graph database at {self.db_path}")
         if age_hours is not None and age_hours > STALE_AFTER_HOURS:
             notes.append(
                 f"the graph was last built {age_hours:.0f}h ago; the nightly rebuild "
@@ -158,13 +178,13 @@ def build_domain(
             Record(id=key, title=key, subtitle=str(value))
             for key, value in sorted(metadata.items())
         ]
-        if db_path.is_file():
+        if self.db_path.is_file():
             records.append(
                 Record(
                     id="size",
                     title="size on disk",
-                    subtitle=f"{human_size(db_path.stat().st_size)} · "
-                    f"modified {fmt_ago(db_path.stat().st_mtime)}",
+                    subtitle=f"{human_size(self.db_path.stat().st_size)} · "
+                    f"modified {fmt_ago(self.db_path.stat().st_mtime)}",
                 )
             )
         return build_collection(
@@ -173,17 +193,17 @@ def build_domain(
             "When the graph was built, at which schema version, and how big it is.",
             "rows in the graph's metadata table",
             records,
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(notes),
             as_of=as_of(),
         )
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """What is in the graph, and how fresh the build is."""
-        con, error = _open()
-        metadata = _metadata(con)
+        con, error = self._open()
+        metadata = self._metadata(con)
         _close(con)
-        counts = _counts(block=False)
+        counts = self._counts(block=False)
         stamp = str(counts.get("_stamp", ""))
         nodes = int(counts.get("nodes", 0))
         raw_edges = counts.get("edges")
@@ -194,8 +214,8 @@ def build_domain(
         age_hours = (age_seconds(built) or 0) / 3600 if built else None
         stale = age_hours is not None and age_hours > STALE_AFTER_HOURS
         notes = [note for note in (error,) if note]
-        if not db_path.is_file():
-            notes.append(f"no graph database at {db_path}")
+        if not self.db_path.is_file():
+            notes.append(f"no graph database at {self.db_path}")
         if stale:
             notes.append(
                 f"the graph was last built {age_hours:.0f}h ago; a nightly rebuild "
@@ -211,9 +231,9 @@ def build_domain(
             "Code graph",
             "The builder's own tables: communities, risky nodes and flows.",
             "communities detected by the builder",
-            _communities_collection().records,
+            self._communities_collection().records,
             cap=5,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(communities, "communities"),
                 Count(flows, "execution flows"),
@@ -227,8 +247,8 @@ def build_domain(
                 ("Last build", fmt_ago(built) if built else "\u2014"),
                 (
                     "Size",
-                    human_size(db_path.stat().st_size)
-                    if db_path.is_file()
+                    human_size(self.db_path.stat().st_size)
+                    if self.db_path.is_file()
                     else "\u2014",
                 ),
             ),
@@ -236,9 +256,9 @@ def build_domain(
             as_of=as_of(),
         )
 
-    def _communities_collection() -> Collection:
+    def _communities_collection(self) -> Collection:
         """Communities with the summary the builder wrote for each."""
-        con, error = _open()
+        con, error = self._open()
         rows, sql_error = query(
             con,
             "select c.id as id, c.name as name, c.level as level, c.size as size, "
@@ -283,14 +303,14 @@ def build_domain(
                 for row in rows
             ],
             cap=COMMUNITY_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
         )
 
-    def _risky_collection() -> Collection:
+    def _risky_collection(self) -> Collection:
         """The riskiest nodes, straight from risk_index."""
-        con, error = _open()
+        con, error = self._open()
         rows, sql_error = query(
             con,
             "select node_id, qualified_name, risk_score, caller_count, test_coverage, "
@@ -328,15 +348,15 @@ def build_domain(
                 )
                 for row in rows
             ],
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(Count(scored, "nodes with a risk score"),),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
         )
 
-    def _callers_collection() -> Collection:
+    def _callers_collection(self) -> Collection:
         """Most-called nodes, from the precomputed caller count."""
-        con, error = _open()
+        con, error = self._open()
         rows, sql_error = query(
             con,
             "select qualified_name, caller_count, risk_score from risk_index "
@@ -365,7 +385,7 @@ def build_domain(
                 )
                 for row in rows
             ],
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note)
             + (
                 "a degree count over the 1.5M-row edge table takes ~4s per query, so "
@@ -374,9 +394,9 @@ def build_domain(
             as_of=as_of(),
         )
 
-    def _flows_collection() -> Collection:
+    def _flows_collection(self) -> Collection:
         """Execution flows by criticality."""
-        con, error = _open()
+        con, error = self._open()
         rows, sql_error = query(
             con,
             "select id, name, criticality, depth, node_count, file_count from flows "
@@ -407,22 +427,24 @@ def build_domain(
                 )
                 for row in rows
             ],
-            sources=_sources(),
+            sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
         )
 
-    def collections(_filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, _filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections for the code graph."""
         return [
-            _build_collection(),
-            _communities_collection(),
-            _risky_collection(),
-            _callers_collection(),
-            _flows_collection(),
+            self._build_collection(),
+            self._communities_collection(),
+            self._risky_collection(),
+            self._callers_collection(),
+            self._flows_collection(),
         ]
 
-    def _node(con: Any, qualified_name: str) -> Any | None:
+    def _node(self, con: Any, qualified_name: str) -> Any | None:
         rows, _error = query(
             con,
             "select id, name, qualified_name, kind, language, file_path, line_start, "
@@ -432,10 +454,10 @@ def build_domain(
         )
         return rows[0] if rows else None
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One node: where it lives and what the builder says about it."""
-        con, error = _open()
-        row = _node(con, record_id)
+        con, error = self._open()
+        row = self._node(con, record_id)
         if row is None:
             _close(con)
             return None
@@ -477,10 +499,10 @@ def build_domain(
             body=truncate(str(_get(row, "params", "")), 1000),
         )
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind a node: its edges, its flows and its community."""
-        con, error = _open()
-        node = _node(con, record_id)
+        con, error = self._open()
+        node = self._node(con, record_id)
         if node is None:
             _close(con)
             return []
@@ -533,7 +555,7 @@ def build_domain(
                     )
                     for index, row in enumerate(rows)
                 ],
-                sources=_sources(),
+                sources=self._sources(),
                 as_of=as_of(),
             )
 
@@ -553,7 +575,7 @@ def build_domain(
                     )
                     for row in flow_rows
                 ],
-                sources=_sources(),
+                sources=self._sources(),
                 as_of=as_of(),
             ),
             build_collection(
@@ -570,7 +592,7 @@ def build_domain(
                     )
                     for row in community_rows
                 ],
-                sources=_sources(),
+                sources=self._sources(),
                 as_of=as_of(),
             ),
         ]
@@ -586,18 +608,18 @@ def build_domain(
                 sections[0].description,
                 sections[0].count.definition,
                 list(sections[0].records),
-                sources=_sources(),
+                sources=self._sources(),
                 notes=notes,
                 as_of=as_of(),
             )
         return sections
 
-    def search(needle: str, limit: int) -> Sequence[Record]:
+    def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Full-text search over node names, paths and signatures via nodes_fts."""
         term = needle.strip()
         if not term:
             return []
-        con, _error = _open()
+        con, _error = self._open()
         phrase = '"' + term.replace('"', '""') + '"'
         rows, sql_error = query(
             con,
@@ -626,13 +648,19 @@ def build_domain(
             for row in rows
         ]
 
-    return Domain(
-        key="graph",
-        title="Code graph",
-        summary="Communities, risky nodes and flows from the nightly graph build.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(
+    hermes_home: Path | None = None, graph_db: Path | None = None
+) -> Domain:
+    """Build the code graph domain.
+
+    Args:
+        hermes_home: Hermes home or profile directory.
+        graph_db: Explicit database path; defaults to
+            ``<root>/.code-review-graph/graph.db``.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.  Reads are narrow and indexed, and the
+        one expensive count is cached with the moment it was taken.
+    """
+    return GraphDomain(hermes_home, graph_db).domain()
