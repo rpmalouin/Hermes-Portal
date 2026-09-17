@@ -38,6 +38,7 @@ from ..sources import (
     snippet,
     truncate,
 )
+from .base import SnapshotDomain
 
 JOBS_CAP = 50
 RUNS_CAP = 40
@@ -167,39 +168,47 @@ def _job_record(job: dict[str, Any]) -> Record:
     )
 
 
-def build_domain(hermes_home: Path | None = None) -> Domain:
-    """Build the cron domain.
+class CronDomain(SnapshotDomain[None]):
+    """Scheduled jobs, their recent runs, and the failures worth seeing.
 
-    Args:
-        hermes_home: Hermes home or profile directory; the root holding ``cron/``
-            is resolved from it.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`.  Files are read per call, so the
-        page reflects the current store.
+    A class rather than a factory of closures, so every helper below can be called by
+    name -- by a test, by a reader, and by the code graph.
     """
-    cron_root = cron_dir(hermes_home)
-    jobs_path = cron_root / "jobs.json"
-    exec_path = cron_root / "executions.db"
-    output_dir = cron_root / "output"
 
-    def _sources() -> tuple[Source, ...]:
+    key = "cron"
+    title = "Cron"
+    summary = "Scheduled jobs, execution history and run output, read-only."
+
+    def __init__(self, hermes_home: Path | None = None) -> None:
+        """Point at the sources; nothing is read until a page asks."""
+        super().__init__(hermes_home)
+        self.cron_root = cron_dir(self.hermes_home)
+        self.jobs_path = self.cron_root / "jobs.json"
+        self.exec_path = self.cron_root / "executions.db"
+        self.output_dir = self.cron_root / "output"
+
+    def _sources(self) -> tuple[Source, ...]:
         return (
-            path_source("jobs.json", jobs_path, note="job definitions"),
-            path_source("executions.db", exec_path, note="one row per run, read-only"),
-            path_source("output/", output_dir, note="per-run reports"),
+            path_source("jobs.json", self.jobs_path, note="job definitions"),
+            path_source(
+                "executions.db", self.exec_path, note="one row per run, read-only"
+            ),
+            path_source("output/", self.output_dir, note="per-run reports"),
         )
 
-    def _jobs_and_notes() -> tuple[list[dict[str, Any]], tuple[str, ...]]:
-        jobs, error = _load_jobs(jobs_path)
+    def _jobs_and_notes(self) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+        jobs, error = _load_jobs(self.jobs_path)
         notes: list[str] = []
         if error:
             notes.append(error)
         profile_stores = (
             sorted(
-                p for p in (cron_root.parent / "profiles").glob("*/cron/executions.db")
+                p
+                for p in (self.cron_root.parent / "profiles").glob(
+                    "*/cron/executions.db"
+                )
             )
-            if (cron_root.parent / "profiles").is_dir()
+            if (self.cron_root.parent / "profiles").is_dir()
             else []
         )
         if profile_stores:
@@ -209,10 +218,10 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             )
         return jobs, tuple(notes)
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """Headline numbers for the cron domain."""
-        jobs, notes = _jobs_and_notes()
-        con, error = open_sqlite(exec_path)
+        jobs, notes = self._jobs_and_notes()
+        con, error = open_sqlite(self.exec_path)
         runs = 0
         if con is not None:
             rows, _sql_error = query(con, "select count(*) from executions")
@@ -225,7 +234,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "entries in cron/jobs.json",
             [_job_record(job) for job in jobs],
             cap=5,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(runs, "rows in cron/executions.db"),
                 Count(sum(1 for job in jobs if job.get("enabled")), "enabled jobs"),
@@ -235,9 +244,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _jobs_collection() -> Collection:
+    def _jobs_collection(self) -> Collection:
         """Every defined job."""
-        jobs, notes = _jobs_and_notes()
+        jobs, notes = self._jobs_and_notes()
         return build_collection(
             "jobs",
             "Jobs",
@@ -245,7 +254,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             "entries in cron/jobs.json",
             [_job_record(job) for job in jobs],
             cap=JOBS_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(sum(1 for job in jobs if job.get("enabled")), "enabled"),
                 Count(sum(1 for job in jobs if job.get("script")), "run a script"),
@@ -255,11 +264,11 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _runs_collection(job_id: str | None = None) -> Collection:
+    def _runs_collection(self, job_id: str | None = None) -> Collection:
         """Execution history, optionally for one job."""
-        jobs, _notes = _jobs_and_notes()
+        jobs, _notes = self._jobs_and_notes()
         names = {str(job.get("id")): _job_title(job) for job in jobs}
-        con, error = open_sqlite(exec_path)
+        con, error = open_sqlite(self.exec_path)
         columns = select_columns(con, "executions", EXECUTION_COLUMNS)
         where = " where job_id = ?" if job_id else ""
         params = (job_id,) if job_id else ()
@@ -324,7 +333,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             definition,
             records,
             cap=RUNS_CAP if not job_id else JOB_RUNS_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(total, "runs counted here"),
                 Count(completed, "of those, completed"),
@@ -334,9 +343,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _incidents_collection() -> Collection:
+    def _incidents_collection(self) -> Collection:
         """Failures the cron scheduler recorded."""
-        con, error = open_sqlite(exec_path)
+        con, error = open_sqlite(self.exec_path)
         columns = select_columns(con, "cron_incidents", INCIDENT_COLUMNS)
         if not columns:
             _close(con)
@@ -346,7 +355,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 "Failures recorded by the scheduler.",
                 "rows in cron_incidents",
                 [],
-                sources=_sources(),
+                sources=self._sources(),
                 notes=(error or "no cron_incidents table in this database",),
                 as_of=as_of(),
             )
@@ -391,7 +400,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 for row in rows
             ],
             cap=JOBS_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=tuple(
                 Count(count, f"incidents in state {state}")
                 for state, count in sorted(states.items())
@@ -400,17 +409,23 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def collections(_filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, _filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections for the cron domain.
 
         No query filters yet: a job's own runs and output live behind the job's
         detail page, which keeps the collection count honest.
         """
-        return [_jobs_collection(), _runs_collection(), _incidents_collection()]
+        return [
+            self._jobs_collection(),
+            self._runs_collection(),
+            self._incidents_collection(),
+        ]
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One job, with its prompt and script text."""
-        jobs, _notes = _jobs_and_notes()
+        jobs, _notes = self._jobs_and_notes()
         for job in jobs:
             if str(job.get("id")) == record_id:
                 record = _job_record(job)
@@ -436,9 +451,9 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 )
         return None
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind one job: its runs and the reports those runs wrote."""
-        job_dir = output_dir / record_id
+        job_dir = self.output_dir / record_id
         outputs = (
             sorted((p for p in job_dir.iterdir() if p.is_file()), reverse=True)
             if job_dir.is_dir()
@@ -467,7 +482,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 )
             )
         return [
-            _runs_collection(record_id),
+            self._runs_collection(record_id),
             build_collection(
                 "output",
                 "Output files",
@@ -481,12 +496,12 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             ),
         ]
 
-    def search(needle: str, limit: int) -> Sequence[Record]:
+    def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Case-insensitive substring search over job definitions."""
         term = needle.strip().lower()
         if not term:
             return []
-        jobs, _notes = _jobs_and_notes()
+        jobs, _notes = self._jobs_and_notes()
         hits = []
         for job in jobs:
             haystack = " ".join(
@@ -515,13 +530,14 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 break
         return hits
 
-    return Domain(
-        key="cron",
-        title="Cron",
-        summary="Scheduled jobs, execution history and run output, read-only.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(hermes_home: Path | None = None) -> Domain:
+    """Build the 'cron' domain.
+
+    Args:
+        hermes_home: Hermes home or profile directory.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.
+    """
+    return CronDomain(hermes_home).domain()

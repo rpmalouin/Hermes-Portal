@@ -36,6 +36,7 @@ from ..sources import (
     tail_text,
     truncate,
 )
+from .base import SnapshotDomain
 
 WINDOW_BYTES = 200_000
 FILES_CAP = 40
@@ -119,28 +120,31 @@ def scan(path: Path) -> dict[str, Any]:
     }
 
 
-def build_domain(hermes_home_override: Path | None = None) -> Domain:
-    """Build the logs domain.
+class LogsDomain(SnapshotDomain[None]):
+    """Log files and their failure signatures, tails only and scrubbed.
 
-    Args:
-        hermes_home_override: Hermes home or profile directory; the default
-            resolves ``$HERMES_HOME`` then ``~/.hermes``.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain`.  Files are read (tails only) per
-        collection, and every rendered line is scrubbed.
+    A class rather than a factory of closures, so every helper below can be called by
+    name -- by a test, by a reader, and by the code graph.
     """
 
-    def _sources() -> tuple[Source, ...]:
+    key = "logs"
+    title = "Logs"
+    summary = "Log tails and grouped error signatures, scrubbed of credentials."
+
+    def __init__(self, hermes_home_override: Path | None = None) -> None:
+        """Point at the sources; nothing is read until a page asks."""
+        super().__init__(hermes_home_override)
+
+    def _sources(self) -> tuple[Source, ...]:
         return tuple(
             path_source(label, root, note=", ".join(patterns))
-            for label, root, patterns in log_roots(hermes_home_override)
+            for label, root, patterns in log_roots(self.hermes_home)
         )
 
-    def _scans() -> list[dict[str, Any]]:
-        return [scan(path) for path in log_files(hermes_home_override)]
+    def _scans(self) -> list[dict[str, Any]]:
+        return [scan(path) for path in log_files(self.hermes_home)]
 
-    def _files_collection(scans: list[dict[str, Any]]) -> Collection:
+    def _files_collection(self, scans: list[dict[str, Any]]) -> Collection:
         """One record per log file."""
         return build_collection(
             "files",
@@ -176,7 +180,7 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
                 for entry in scans
             ],
             cap=FILES_CAP,
-            sources=_sources(),
+            sources=self._sources(),
             notes=(
                 f"only the last {human_size(WINDOW_BYTES)} of each file is read, so "
                 "counts describe the window and not the whole history",
@@ -184,7 +188,7 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def _signatures_collection(scans: list[dict[str, Any]]) -> Collection:
+    def _signatures_collection(self, scans: list[dict[str, Any]]) -> Collection:
         """Recurring error signatures across every file, most frequent first."""
         totals: dict[str, int] = {}
         examples: dict[str, str] = {}
@@ -216,7 +220,7 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
                 )
                 for index, (key, count) in enumerate(ordered[:SIGNATURES_CAP])
             ],
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(len(ordered), "distinct signatures"),
                 Count(sum(totals.values()), "error-ish lines in the windows"),
@@ -228,11 +232,11 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def overview() -> Collection:
+    def overview(self) -> Collection:
         """Headline: how many files, how noisy, and the worst offender."""
-        scans = _scans()
-        files = _files_collection(scans)
-        signatures = _signatures_collection(scans)
+        scans = self._scans()
+        files = self._files_collection(scans)
+        signatures = self._signatures_collection(scans)
         top = signatures.records[0] if signatures.records else None
         return build_collection(
             "overview",
@@ -241,7 +245,7 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
             "log files in scope (read from the end)",
             files.records,
             cap=5,
-            sources=_sources(),
+            sources=self._sources(),
             extra_counts=(
                 Count(len(scans), "log files scanned"),
                 Count(
@@ -263,14 +267,16 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
-    def collections(_filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, _filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections for logs."""
-        scans = _scans()
-        return [_files_collection(scans), _signatures_collection(scans)]
+        scans = self._scans()
+        return [self._files_collection(scans), self._signatures_collection(scans)]
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One log file: its facts plus the tail of the file itself."""
-        for path in log_files(hermes_home_override):
+        for path in log_files(self.hermes_home):
             if path.name != record_id:
                 continue
             _text, truncated, error = tail_text(path, WINDOW_BYTES)
@@ -297,9 +303,9 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
             )
         return None
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind one log file: the error lines in its window, scrubbed."""
-        for path in log_files(hermes_home_override):
+        for path in log_files(self.hermes_home):
             if path.name != record_id:
                 continue
             entry = scan(path)
@@ -330,14 +336,14 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
             ]
         return []
 
-    def search(needle: str, limit: int) -> Sequence[Record]:
+    def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Grep the tail windows of every log file."""
         term = needle.strip()
         if not term:
             return []
         lowered = term.lower()
         hits: list[Record] = []
-        for entry in _scans():
+        for entry in self._scans():
             for index, line in enumerate(entry["lines"]):
                 if lowered in line.lower():
                     hits.append(
@@ -355,13 +361,13 @@ def build_domain(hermes_home_override: Path | None = None) -> Domain:
                 break
         return hits
 
-    return Domain(
-        key="logs",
-        title="Logs",
-        summary="Log tails and grouped error signatures, scrubbed of credentials.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(
+    hermes_home_override: Path | None = None,
+) -> Domain:
+    """Build the logs domain.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.
+    """
+    return LogsDomain(hermes_home_override=hermes_home_override).domain()

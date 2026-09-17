@@ -31,6 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes.portal import sources  # noqa: E402
+from hermes.portal.domains import cron as cron_domain  # noqa: E402
 from hermes.portal.domains import default_registry  # noqa: E402
 from hermes.portal.domains import health as health_domain  # noqa: E402
 from hermes.portal.domains import logs as logs_domain  # noqa: E402
@@ -762,6 +763,53 @@ class ConvertedDomainsPrimitivesTestCase(BaseP1):
                 domain = module.build_domain(**kwargs)
                 self.assertTrue(domain.key)
                 self.assertEqual(domain.overview().key, "overview")
+
+
+class CronPrimitivesTestCase(BaseP1):
+    """The cron domain's primitives by name -- the last factory to become a class."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.cron = cron_domain.CronDomain(hermes_home=self.root)
+
+    def test_preamble_locals_are_attributes_now(self) -> None:
+        self.assertTrue(str(self.cron.cron_root).endswith("cron"))
+        self.assertEqual(self.cron.jobs_path, self.cron.cron_root / "jobs.json")
+        self.assertEqual(self.cron.exec_path, self.cron.cron_root / "executions.db")
+        self.assertEqual(self.cron.output_dir, self.cron.cron_root / "output")
+
+    def test_sources_name_the_store_it_reads(self) -> None:
+        sources = self.cron._sources()
+        self.assertTrue(sources)
+        self.assertTrue(any("jobs.json" in source.label for source in sources))
+
+    def test_jobs_and_notes_returns_both_halves(self) -> None:
+        jobs, notes = self.cron._jobs_and_notes()
+        self.assertTrue(jobs)
+        self.assertIsInstance(notes, tuple)
+
+    def test_every_collection_builder_counts_what_it_carries(self) -> None:
+        for collection in (
+            self.cron._jobs_collection(),
+            self.cron._runs_collection(),
+            self.cron._incidents_collection(),
+        ):
+            with self.subTest(collection=collection.key):
+                if not collection.truncated:
+                    self.assertEqual(collection.count.value, len(collection.records))
+        self.assertTrue(self.cron._jobs_collection().records)
+
+    def test_a_runs_collection_can_be_narrowed_to_one_job(self) -> None:
+        job = self.cron._jobs_collection().records[0]
+        narrowed = self.cron._runs_collection(job_id=job.id)
+        self.assertLessEqual(
+            narrowed.count.value, self.cron._runs_collection().count.value
+        )
+
+    def test_build_domain_still_returns_a_wired_domain(self) -> None:
+        domain = cron_domain.build_domain(hermes_home=self.root)
+        self.assertEqual(domain.key, "cron")
+        self.assertEqual(domain.overview().key, "overview")
 
 
 if __name__ == "__main__":

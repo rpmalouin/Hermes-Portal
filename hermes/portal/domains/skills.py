@@ -41,6 +41,7 @@ from ..sources import (
     snippet,
     truncate,
 )
+from .base import SnapshotDomain
 
 SKILLS_CAP = 100
 REFERENCES_CAP = 50
@@ -269,52 +270,69 @@ def _skills_collection(snapshot: _Snapshot, box: str | None = None) -> Collectio
     )
 
 
-def build_domain(
-    hermes_home: Path | None = None,
-    profile: str | None = None,
-    all_profiles: bool = False,
-) -> Domain:
-    """Build the skills domain, snapshotting the filesystem once.
+class SkillsDomain(SnapshotDomain[None]):
+    """Every skill document the running agent can invoke.
 
-    Args:
-        hermes_home: Hermes home or profile directory; ``None`` uses
-            ``$HERMES_HOME`` then ``~/.hermes``.
-        profile: Named profile to read skills from.
-        all_profiles: Also read every profile under the Hermes home.
-
-    Returns:
-        A :class:`~hermes.portal.model.Domain` ready to register.
+    A class rather than a factory of closures, so every helper below can be called by
+    name -- by a test, by a reader, and by the code graph.
     """
-    snapshot = _snapshot(
-        hermes_home=hermes_home, profile=profile, all_profiles=all_profiles
-    )
 
-    def overview() -> Collection:
+    key = "skills"
+    title = "Skills"
+    summary = "Every SKILL.md the running agent has: boxes, files, frontmatter."
+
+    def __init__(
+        self,
+        hermes_home: Path | None = None,
+        profile: str | None = None,
+        all_profiles: bool = False,
+    ) -> None:
+        """Point at the sources; nothing is read until a page asks.
+
+        Args:
+            hermes_home: Hermes home or profile directory.
+            profile: Named profile to read skills from.
+            all_profiles: Also read every profile under the Hermes home.
+        """
+        super().__init__(hermes_home)
+        self.profile = profile
+        self.all_profiles = all_profiles
+        # the factory built this eagerly; the name is ``index`` because ``snapshot`` is
+        # the base class's method for the same thing
+        self.index = _snapshot(
+            hermes_home=self.hermes_home,
+            profile=self.profile,
+            all_profiles=self.all_profiles,
+        )
+
+    def overview(self) -> Collection:
         """Headline collection: the skill count, and the counts that differ from it."""
         return build_collection(
             "overview",
             "Skills",
             "Everything the running Hermes agent can invoke, as documents.",
             "unique frontmatter names across all roots",
-            _skill_records(snapshot),
+            _skill_records(self.index),
             cap=5,
-            sources=_sources(snapshot),
+            sources=_sources(self.index),
             extra_counts=(
                 Count(
-                    snapshot.paths_total, "SKILL.md files on disk (symlinks followed)"
+                    self.index.paths_total, "SKILL.md files on disk (symlinks followed)"
                 ),
-                Count(len(_boxes(snapshot)), "boxes (first path component)"),
-                Count(len(snapshot.per_root), "skill roots scanned"),
+                Count(len(_boxes(self.index)), "boxes (first path component)"),
+                Count(len(self.index.per_root), "skill roots scanned"),
             ),
             as_of=as_of(),
             notes=(
-                f"{len(snapshot.by_name)} unique skills across "
-                f"{len(snapshot.per_root)} roots; the Skills collection lists them "
+                f"{len(self.index.by_name)} unique skills across "
+                f"{len(self.index.per_root)} roots; the Skills collection lists them "
                 "all.",
             ),
         )
 
-    def collections(filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
+    def collections(
+        self, filters: Mapping[str, str] | None = None
+    ) -> Sequence[Collection]:
         """Drill-down collections: roots, boxes, and every skill.
 
         ``?box=<name>`` narrows the skill list to one box; the box records link
@@ -323,15 +341,15 @@ def build_domain(
         box = ((filters or {}).get("box") or "").strip()
         narrow = box or None
         return [
-            _roots_collection(snapshot),
-            _boxes_collection(snapshot),
-            _skills_collection(snapshot, narrow),
+            _roots_collection(self.index),
+            _boxes_collection(self.index),
+            _skills_collection(self.index, narrow),
         ]
 
-    def detail(record_id: str) -> Record | None:
+    def detail(self, record_id: str) -> Record | None:
         """One skill or one root: manifest fields, file facts and the document."""
-        for label, path, found, present in snapshot.per_root:
-            if label == record_id and record_id not in snapshot.by_name:
+        for label, path, found, present in self.index.per_root:
+            if label == record_id and record_id not in self.index.by_name:
                 return Record(
                     id=label,
                     title=label,
@@ -341,11 +359,11 @@ def build_domain(
                         ("root", str(path)),
                         ("SKILL.md files", str(found)),
                         ("present", "yes" if present else "no"),
-                        ("roots scanned", str(len(snapshot.per_root))),
+                        ("roots scanned", str(len(self.index.per_root))),
                     ),
                     links=(("/skills", "All skills"),),
                 )
-        card = snapshot.by_name.get(record_id)
+        card = self.index.by_name.get(record_id)
         if card is None:
             return None
         path = Path(card.path)
@@ -396,9 +414,9 @@ def build_domain(
             group=card.box,
         )
 
-    def detail_sections(record_id: str) -> Sequence[Collection]:
+    def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind one skill: the frontmatter that was parsed, and its references."""
-        card = snapshot.by_name.get(record_id)
+        card = self.index.by_name.get(record_id)
         if card is None:
             return []
         path = Path(card.path)
@@ -455,13 +473,13 @@ def build_domain(
         )
         return [front, references]
 
-    def search(query: str, limit: int) -> Sequence[Record]:
+    def search(self, query: str, limit: int) -> Sequence[Record]:
         """Case-insensitive substring search over skill metadata."""
         needle = query.strip().lower()
         if not needle:
             return []
         hits = []
-        for card in sorted(snapshot.by_name.values(), key=lambda c: c.name):
+        for card in sorted(self.index.by_name.values(), key=lambda c: c.name):
             haystack = " ".join(
                 (card.name, card.title, card.description, card.box, card.category)
             ).lower()
@@ -479,13 +497,17 @@ def build_domain(
                 break
         return hits
 
-    return Domain(
-        key="skills",
-        title="Skills",
-        summary="Every SKILL.md the running agent has: boxes, files, frontmatter.",
-        overview=overview,
-        collections=collections,
-        detail=detail,
-        search=search,
-        detail_sections=detail_sections,
-    )
+
+def build_domain(
+    hermes_home: Path | None = None,
+    profile: str | None = None,
+    all_profiles: bool = False,
+) -> Domain:
+    """Build the skills domain.
+
+    Returns:
+        A :class:`~hermes.portal.model.Domain`.
+    """
+    return SkillsDomain(
+        hermes_home=hermes_home, profile=profile, all_profiles=all_profiles
+    ).domain()

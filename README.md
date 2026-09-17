@@ -395,6 +395,22 @@ third: its 528-line factory is **9** lines, and it *lost* code in the move — t
 `state: dict` cache the closure kept is now the base class's, so a whole hand-rolled
 memo layer deleted itself rather than being rewritten.
 
+**P12 finished it: all ten domains are classes.** The last four factories were the biggest
+left — `health` 486, `usage` 458, `sessions` 443, `vault` 438 — and then the two the code
+graph never ranked because they sat under its 300-line threshold: `logs` 246 and `skills`
+220. (A threshold is a floor, not an inventory: the graph orders the work, it does not
+enumerate it.) `vault.py` was the only one with real machinery in its factory — a
+hand-rolled `state` dict and a `threading.Lock` around a closure called `index()` — and
+both are the base class's now, `index()` being `read()` behind `snapshot()`. The portal's
+largest function is **114 lines**, down from 793.
+
+By then the conversion was an `ast`-driven script rather than hand-mapping: signatures,
+body ranges and the `Domain` wiring come from the parse tree, and bodies still move as
+text so their formatting is untouched. Two things it had to learn: a factory whose first
+parameter is not called `hermes_home` (`logs` takes `hermes_home_override`), and a local
+that has to be renamed because the base class owns the name (`skills` kept its snapshot in
+`snapshot`).
+
 The conversion found a real bug in itself: those helpers take the snapshot they are
 *handed*, because that is how a filtered view reaches them, and the first cut had them
 fetch `self.snapshot()` instead — so `?profile=default` silently rendered every profile.
@@ -479,6 +495,10 @@ The mockup's UI on top of real data, with one new idea: a record can be **starre
   means launching a Chromium browser with `--app=`. This machine's default browser is
   not Chromium, so that would be a flag that silently does nothing; the theme toggle
   and the rail get the same effect inside a normal tab.
+* **A filter has to exist in three places, or it does not exist.** `?folder=` was read by
+  the vault domain and covered by a test, but `FILTER_KEYS` in `server.py` did not list it,
+  so the server stripped it before the domain ever saw it — which made every folder tile a
+  link to a page that ignored it. Found by checking the wire, not the domain.
 * **The box tiles are curated, and they say so.** The tree has 55 boxes and 43 of them
   hold exactly one skill, so `taxonomy.py` arranges the real boxes into eight groups
   -- name, blurb, emoji and a CSS gradient, no image assets. The tiles are
