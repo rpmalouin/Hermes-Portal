@@ -1,8 +1,12 @@
 # Hermes-Dashboard
 
-A modular, standard-library-only Python framework for discovering, registering
-and running *skills* — small self-contained Python programs described by a
-`skill.json` manifest. The layout mirrors the Hermes Skill Deck system:
+Two standard-library-only Python halves that grew into one repository: **the Hermes
+Portal** — a read-only, ten-domain drill-down over everything the running Hermes agent
+keeps — and the **skill framework** it grew out of, for discovering, registering and
+running *skills* (self-contained Python programs described by a `skill.json` manifest).
+
+[Why it exists](#why-this-project) is the next section; [how to run
+it](#how-to-use-this) is the one after that. The layout:
 
 ```
 hermes/
@@ -49,21 +53,110 @@ hermes/
       graph.py       the code graph: communities, risk, callers, flows
 tests/
   __init__.py
-  test_smoke.py      43 tests, the framework (manifest, loader, registry, executor)
+  test_smoke.py      48 tests, the framework (manifest, loader, registry, executor)
   test_skill_trees.py 23 tests, the skill data layer on a fake Hermes tree
-  test_portal.py     59 tests, the portal incl. the skills gallery
-  test_portal_domains.py 31 tests, usage/health/logs + whole-registry invariants
-  test_portal_heavy.py 35 tests, the vault and the code graph
-  test_portal_ui.py  62 tests, favourites, theme, palette and the box tiles
-  test_portal_memory.py 26 tests, the memory files and their budgets
-  test_portal_plugins.py 26 tests, plugin discovery (and never running one)
-  test_portal_fts.py 31 tests, message search: queries, excerpts, fallbacks
+  test_portal.py     67 tests, the portal, routing, sources, the skills gallery
+  test_portal_domains.py 48 tests, usage/health/logs/cron + registry invariants
+  test_portal_heavy.py 56 tests, the vault and the code graph
+  test_portal_ui.py  63 tests, favourites, theme, palette and the box tiles
+  test_portal_memory.py 37 tests, the memory files and their budgets
+  test_portal_plugins.py 38 tests, plugin discovery (and never running one)
+  test_portal_fts.py 30 tests, message search: queries, excerpts, fallbacks
   test_portal_memory_history.py 22 tests, older copies of the memory files
-README.md
+  432 in total, plus the security suite: Host checking, headers, symlink
+  containment, manifest path safety and scrubbed error text
+README.md           why it exists, how to use it, and the rules it runs on
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
 .gitignore          .venv/, __pycache__/, build artifacts, caches, .DS_Store
 ```
+
+## Why this project
+
+Hermes knows a great deal about itself and shows almost none of it. Its skills live in
+`SKILL.md` files across four roots; its conversations in a SQLite store with two FTS
+indexes; its schedule in `jobs.json` and `executions.db`; its spend in a column on the
+sessions table; its health in launchd, heartbeats and a ticker file; its logs in two
+directories; what it remembers about you in `MEMORY.md` and `USER.md` per profile; its
+extensions in 105 plugin manifests; your notes in an Obsidian vault; and the shape of its
+own code in a 2.5 GB code graph. Ten sources, ten formats, and no single place to look.
+
+**The Hermes Portal is that place.** It answers one question well — *what is in there, and
+can I go deeper?* — for all ten at once, under four refusals that shape everything else:
+
+* **Read-only over live data.** SQLite is opened `mode=ro` with `query_only`; files are
+  read from the end; probes are GETs. The portal never writes to anything Hermes owns, so
+  it is safe to leave open while the agent is working.
+* **Standard library only.** No web framework, no template engine, no extra SQLite
+  driver: `http.server`, `sqlite3` and string formatting. It runs from a checkout on a
+  machine with nothing but Python 3.11+ — including the Linux box this is meant to be
+  copied to.
+* **Numbers carry their definitions.** Nothing shows a bare count: each names the rule
+  that produced it, and competing counts sit side by side instead of one being quietly
+  chosen. A count must be the size of the set its label describes — the project's standing
+  invariant, and the bug that has bitten it most often.
+* **It degrades, it does not fall over.** A missing source, a corrupt favourites file, a
+  schema that moved, an adapter that raises: each becomes a note on the page and the rest
+  keeps serving.
+
+What it is *not*: an agent UI (Hermes' own dashboard and CLI do that), a writer, or a
+monitoring daemon. It is a lens — one page of HTML and one document of JSON per view — so
+that "what does the agent actually have?" is a click away instead of a research project.
+
+The skill framework below it is the smaller half and the older code: the portal grew out
+of it, and it stays useful on its own for discovering and running `skill.json` programs.
+
+## How to use this
+
+**Run the portal.** This is the main way in:
+
+```sh
+python3 -m hermes.portal                    # http://127.0.0.1:8087
+python3 -m hermes.portal --list             # print what it would serve, no server
+python3 -m hermes.portal --no-state         # serve with writing switched off
+.venv/bin/hermes-portal --port 8087         # the installed console script
+```
+
+Open `http://127.0.0.1:8087`: a page per domain, a rail of starred records, a command
+palette (`/` or `⌘K`) over everything, and eight folder tiles over the skill tree. Every
+number on a page links to what produced it, and every page has a `.json` twin — so
+anything you can see, you can also fetch:
+
+| Where | What |
+| --- | --- |
+| `/` | the index: every domain's headline counts, favourites, the skill tiles |
+| `/skills` `/sessions` `/cron` `/usage` `/health` `/logs` `/memory` `/plugins` `/vault` `/graph` | ten domains, one page each, filterable and drillable |
+| `/<domain>/<id>` | one record, plus the collections behind it (a session's messages, a job's runs) |
+| `/search?q=…` | cross-domain search; messages go through the FTS indexes |
+| `/favorites` | the records you starred — the one thing the portal writes |
+| `/<domain>.json`, `/index.json`, `/favorites.json`, `/search.json` | the same data, for scripting |
+
+Filters live in the URL and combine: `?box=creative` (or a category path,
+`?box=mlops/evaluation`), `?folder=Homelab`, `?kind=platform`, `?model=…`, `?profile=…`.
+
+Useful flags: `--vault` (which Obsidian vault), `--graph-db` (which code graph),
+`--profile` / `--all-profiles` (whose skills), `--hermes-home`, `--port`, `--host` (read
+[the security note](#what-it-does-about-being-a-local-server-holding-secrets) before moving
+off loopback), `--no-state`.
+
+**Run the skill framework** — the other half, if you came for skills:
+
+```sh
+python3 -m hermes.cli.shell      # the `hermes>` REPL: `skills`, `run <name> [--k v]`
+.venv/bin/hermes                 # the installed script, from any directory
+```
+
+**Check it still works:**
+
+```sh
+python3 -m unittest discover -s tests -t .    # 432 tests
+uvx ruff@0.14.4 check .                       # lint, configured in pyproject.toml
+```
+
+Where to go next: the skill framework from [Requirements](#requirements) through
+[Profiles](#profiles); the portal from [Web views](#web-views) to
+[The rules the portal runs on](#the-rules-the-portal-runs-on); then
+[Tests and checks](#tests-and-checks).
 
 ## Requirements
 
@@ -360,7 +453,7 @@ a control id that is *proven* to resolve, script tags in every field that reache
 SQL and FTS injection attempts, oversize bodies, wrong media types, hostile `Host`
 headers, and a symlink carrying a canary out of the vault.
 
-Eight domains, each with collections, drill-down and search:
+Ten domains, each with collections, drill-down and search:
 
 | Domain | Source | Reads | Headline |
 | --- | --- | --- | --- |
@@ -370,7 +463,7 @@ Eight domains, each with collections, drill-down and search:
 | usage | `state.db` | `sessions`, `session_model_usage` | 87 priced sessions — $16.68 estimated, 30.0M in / 2.6M out tokens, 4,292 calls |
 | health | `launchctl`, LaunchAgents plists, `state.db`, `lsof`, `cron/ticker_*`, file sizes | services, heartbeats, ports, tickers, storage | the services found — plus running/stale counts |
 | logs | `$HERMES_HOME/logs`, `~/Library/Logs` | the last 200 KB of each file, error signatures | log files in scope — plus distinct signatures |
-| vault | the Obsidian vault (`--vault`, default `/Volumes/Data/MyObsidian`) | all notes indexed in memory, frontmatter, `[[wiki links]]`, checkboxes, the Kanban board | 762 notes — plus 1,116 links, 141 tags, 76 open items |
+| vault | the Obsidian vault (`--vault`, default `/Volumes/Data/MyObsidian`) | all notes indexed in memory, frontmatter, `[[wiki links]]`, checkboxes, the Kanban board | 763 notes — plus 1,116 links, 141 tags, 76 open items |
 | graph | `.code-review-graph/graph.db` (`--graph-db`) | precomputed tables: communities, risk, flows; FTS for search | 38 communities — plus 170,971 nodes, 1.5M edges (cached count) |
 | memory | `memories/MEMORY.md` and `USER.md`, per profile, plus `config.yaml`, plus the archives under `backups/` | every entry, split on the section sign, measured against its character budget; older copies with what changed since | 6 files over 3 profiles — 42 entries; one at 2,200/2,200; 2 archived copies from 2026-08-25 |
 | plugins | `plugin.yaml` manifests under the bundled tree, `~/.hermes/plugins/`, each profile's, and `config.yaml` | names, kinds, versions, file lists, declared env vars and hooks | 105 plugins in 8 kinds; 41 declare requirements |
@@ -379,7 +472,7 @@ P0 was skills/sessions/cron; P1 added usage, health and logs; P2 the two heavy p
 the vault and the code graph; P5 memory; P6 plugins. Every source is read-only; the only
 write in the project is a favourite.
 
-**Vault.** 762 notes totalling ~3 MB is small enough to index in one pass and keep in
+**Vault.** 763 notes totalling ~3 MB is small enough to index in one pass and keep in
 memory, which buys the thing a folder listing cannot: **backlinks**. Open any note and
 you see its frontmatter, its text, what it links to (and whether each target exists) and
 what links back to it. Tags come from frontmatter; open work comes from two conventions,
