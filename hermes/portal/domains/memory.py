@@ -23,7 +23,9 @@ that would otherwise mislead:
 
 from __future__ import annotations
 
+import json
 import re
+import zipfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -53,6 +55,11 @@ KINDS = ("memory", "user")
 KIND_LABELS = {"memory": "MEMORY.md", "user": "USER.md"}
 LIMIT_KEYS = {"memory": "memory_char_limit", "user": "user_char_limit"}
 ENTRY_SEPARATOR = "\u00a7"
+OVERLAP_FLOOR = 0.4
+MEMBER_RE = re.compile(r"(?:^|/)(MEMORY|USER)\.md$")
+MEMBER_KIND = {"MEMORY": "memory", "USER": "user"}
+MAX_MEMBER_BYTES = 1_048_576
+SNAPSHOT_MANIFEST = "manifest.json"
 ENTRIES_CAP = 400
 BODY_CAP = 8000
 TITLE_CHARS = 92
@@ -138,6 +145,194 @@ class MemoryFile:
 
 
 @dataclass(frozen=True)
+class ArchiveCopy:
+    """One older copy of a memory file, from an archive or a snapshot directory."""
+
+    key: str
+    label: str
+    when: str
+    profile: str
+    kind: str
+    source: str
+    path: Path
+    member: str
+    text: str
+    entries: tuple[MemoryEntry, ...] = ()
+    error: str = ""
+
+    @property
+    def label_text(self) -> str:
+        """``MEMORY.md``-style name for the archived file."""
+        return KIND_LABELS.get(self.kind, self.kind)
+
+    @property
+    def chars(self) -> int:
+        """Characters in the archived copy."""
+        return len(self.text)
+
+
+def _profile_in(member: str) -> str:
+    """The profile an archived member belongs to, from its path."""
+    parts = [part for part in member.split("/") if part]
+    if "memories" in parts:
+        index = parts.index("memories")
+        if index >= 2 and parts[index - 2] == "profiles":
+            return parts[index - 1]
+    return "default"
+
+
+def _entries_for(profile: str, kind: str, text: str) -> tuple[MemoryEntry, ...]:
+    """Split archived text into entries the same way the live files are split."""
+    file_key = f"{profile}/{kind}"
+    entries: list[MemoryEntry] = []
+    for position, chunk in enumerate(text.split(ENTRY_SEPARATOR), start=1):
+        cleaned = chunk.strip()
+        if not cleaned:
+            continue
+        entries.append(
+            MemoryEntry(
+                profile=profile,
+                kind=kind,
+                file_key=file_key,
+                index=position,
+                text=cleaned,
+            )
+        )
+    return tuple(entries)
+
+
+def _read_zip(path: Path, root: Path) -> tuple[list[ArchiveCopy], str]:
+    """Read only the memory members of an archive; nothing is extracted to disk."""
+    copies: list[ArchiveCopy] = []
+    label = path.stem
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.namelist():
+                match = MEMBER_RE.search(member)
+                if not match:
+                    continue
+                kind = MEMBER_KIND[match.group(1)]
+                profile = _profile_in(member)
+                info = archive.getinfo(member)
+                if info.file_size > MAX_MEMBER_BYTES:
+                    copies.append(
+                        ArchiveCopy(
+                            key=f"history/{label}/{profile}/{kind}",
+                            label=label,
+                            when=f"{info.date_time[0]:04d}-{info.date_time[1]:02d}-"
+                            f"{info.date_time[2]:02d}",
+                            profile=profile,
+                            kind=kind,
+                            source=f"archive {path.name}",
+                            path=path,
+                            member=member,
+                            text="",
+                            error=f"member is {info.file_size:,} bytes, not read",
+                        )
+                    )
+                    continue
+                text = archive.read(member).decode("utf-8", "replace")
+                copies.append(
+                    ArchiveCopy(
+                        key=f"history/{label}/{profile}/{kind}",
+                        label=label,
+                        when=f"{info.date_time[0]:04d}-{info.date_time[1]:02d}-"
+                        f"{info.date_time[2]:02d}",
+                        profile=profile,
+                        kind=kind,
+                        source=f"archive {path.name}",
+                        path=path,
+                        member=member,
+                        text=text,
+                        entries=_entries_for(profile, kind, text),
+                    )
+                )
+    except (OSError, zipfile.BadZipFile, NotImplementedError) as exc:
+        return [], f"{path.name}: {type(exc).__name__}: {exc}"
+    _ = root
+    return copies, ""
+
+
+def _read_snapshot(directory: Path) -> tuple[list[ArchiveCopy], bool, str]:
+    """Memory copies inside a snapshot directory, and whether its manifest kept any.
+
+    The pre-update snapshots ship a ``manifest.json`` listing exactly what they hold --
+    state.db, config.yaml, cron/ and a few databases, and deliberately **not** memories.
+    Reading the manifest is how this reports that honestly instead of scanning a 126 MB
+    directory for files that were never meant to be there.
+    """
+    manifest_path = directory / SNAPSHOT_MANIFEST
+    holds_memories = False
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return [], False, f"{directory.name}: unreadable manifest ({exc})"
+        files = manifest.get("files") if isinstance(manifest, dict) else None
+        if isinstance(files, dict):
+            holds_memories = any(
+                isinstance(name, str) and MEMBER_RE.search(name) for name in files
+            )
+    copies: list[ArchiveCopy] = []
+    for kind in KINDS:
+        path = directory / "memories" / KIND_LABELS[kind]
+        if not path.is_file():
+            continue
+        text, _truncated, error = read_text(path, limit=200_000)
+        if error:
+            continue
+        copies.append(
+            ArchiveCopy(
+                key=f"history/{directory.name}/default/{kind}",
+                label=directory.name,
+                when=directory.name.split("-")[0],
+                profile="default",
+                kind=kind,
+                source=f"snapshot {directory.name}",
+                path=path,
+                member=f"memories/{KIND_LABELS[kind]}",
+                text=text,
+                entries=_entries_for("default", kind, text),
+            )
+        )
+    return copies, holds_memories, ""
+
+
+def collect_history(root: Path) -> tuple[list[ArchiveCopy], list[str], list[str]]:
+    """Every older copy of a memory file, plus notes about what was scanned.
+
+    Returns ``(copies, notes, scanned)``: the archived memory files found, notes about
+    containers that hold no memories, and the containers that were looked at.
+    """
+    copies: list[ArchiveCopy] = []
+    notes: list[str] = []
+    scanned: list[str] = []
+    for archive_path in sorted((root / "backups").glob("*.zip")):
+        scanned.append(archive_path.name)
+        found, error = _read_zip(archive_path, root)
+        copies.extend(found)
+        if error:
+            notes.append(error)
+        elif not found:
+            notes.append(f"{archive_path.name} holds no memory files")
+    for snapshot_dir in sorted((root / "state-snapshots").glob("*")):
+        if not snapshot_dir.is_dir():
+            continue
+        scanned.append(snapshot_dir.name)
+        found, holds, error = _read_snapshot(snapshot_dir)
+        copies.extend(found)
+        if error:
+            notes.append(error)
+        elif not found and not holds:
+            notes.append(
+                f"snapshot {snapshot_dir.name} keeps no memories by design "
+                "(its manifest lists state.db, config.yaml and cron/, not memories/)"
+            )
+    copies.sort(key=lambda copy: copy.when, reverse=True)
+    return copies, notes, scanned
+
+
+@dataclass(frozen=True)
 class _Snapshot:
     """Everything the domain read, once per process."""
 
@@ -146,6 +341,17 @@ class _Snapshot:
     limits: Mapping[str, int] = field(default_factory=dict)
     config_note: str = ""
     as_of: str = ""
+    history: tuple[ArchiveCopy, ...] = ()
+    history_notes: tuple[str, ...] = ()
+    history_scanned: tuple[str, ...] = ()
+
+    def file_for(self, profile: str, kind: str) -> MemoryFile | None:
+        """The live file a profile/kind pair names, if it is still there."""
+        return self.by_key().get(f"{profile}/{kind}")
+
+    def by_history_key(self) -> dict[str, ArchiveCopy]:
+        """Archived copy key -> copy."""
+        return {copy.key: copy for copy in self.history}
 
     def by_key(self) -> dict[str, MemoryFile]:
         """File key -> file."""
@@ -154,6 +360,71 @@ class _Snapshot:
     def entries(self) -> list[MemoryEntry]:
         """Every entry, in file order."""
         return [entry for memory_file in self.files for entry in memory_file.entries]
+
+
+def _overlap(left: str, right: str) -> float:
+    """How much two entries have in common, as a word-set Jaccard ratio."""
+    a = set(re.findall(r"[a-z0-9]+", left.lower()))
+    b = set(re.findall(r"[a-z0-9]+", right.lower()))
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def delta_against(
+    old: tuple[MemoryEntry, ...], new: tuple[MemoryEntry, ...]
+) -> dict[str, tuple[MemoryEntry, ...]]:
+    """Compare an archived copy against the live file, entry by entry.
+
+    Two passes, because one is not enough on real memory.  Entries are matched first by
+    their **title line** (the first non-empty line, which is what the agent writes first
+    and what the lists show).  Whatever is left unmatched is then paired by *word
+    overlap*, best partner first, above :data:`OVERLAP_FLOOR`.
+
+    The second pass catches an entry that was rewritten enough to lose its opening line:
+    under title matching alone it reads as a removal plus an addition.  Measured against
+    this machine's own archive, it pairs the one entry edited in place (57% overlap) and
+    leaves the rest alone -- which is right, because the rest really are different
+    entries: that memory was consolidated in the three weeks since the copy.
+    What remains unpaired after both passes is genuinely added or removed.
+    """
+    old_by_title: dict[str, MemoryEntry] = {}
+    for entry in old:
+        old_by_title.setdefault(entry.title, entry)
+    new_by_title: dict[str, MemoryEntry] = {}
+    for entry in new:
+        new_by_title.setdefault(entry.title, entry)
+
+    changed: list[MemoryEntry] = [
+        new_by_title[title]
+        for title in new_by_title
+        if title in old_by_title
+        and new_by_title[title].text != old_by_title[title].text
+    ]
+    old_left = [e for title, e in old_by_title.items() if title not in new_by_title]
+    new_left = [e for title, e in new_by_title.items() if title not in old_by_title]
+
+    taken: set[str] = set()
+    pairs: list[tuple[MemoryEntry, MemoryEntry]] = []
+    for older in old_left:
+        best: tuple[float, MemoryEntry] | None = None
+        for newer in new_left:
+            if newer.key in taken:
+                continue
+            score = _overlap(older.text, newer.text)
+            if score >= OVERLAP_FLOOR and (best is None or score > best[0]):
+                best = (score, newer)
+        if best is not None:
+            taken.add(best[1].key)
+            pairs.append((older, best[1]))
+
+    paired_old = {older.key for older, _newer in pairs}
+    changed.extend(newer for _older, newer in pairs)
+    return {
+        "added": tuple(entry for entry in new_left if entry.key not in taken),
+        "removed": tuple(entry for entry in old_left if entry.key not in paired_old),
+        "changed": tuple(changed),
+    }
 
 
 def _profile_label(home: Path) -> str:
@@ -282,12 +553,18 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 if not path.is_file():
                     continue
                 files.append(_read_file(label, kind, path, limits.get(kind)))
+        history, history_notes, history_scanned = collect_history(
+            hermes_root(hermes_home)
+        )
         value = _Snapshot(
             files=tuple(files),
             locks=locks,
             limits=limits,
             config_note=config_note,
             as_of=as_of(),
+            history=tuple(history),
+            history_notes=tuple(history_notes),
+            history_scanned=tuple(history_scanned),
         )
         state["value"] = value
         return value
@@ -432,6 +709,93 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=current.as_of,
         )
 
+    def _history_collection(current: _Snapshot) -> Collection:
+        """Older copies of the memory files, newest first, with what changed since."""
+        records = []
+        for copy in current.history:
+            live = current.file_for(copy.profile, copy.kind)
+            delta = (
+                delta_against(copy.entries, live.entries)
+                if live is not None
+                else {"added": (), "removed": (), "changed": ()}
+            )
+            moved = [
+                f"+{len(delta['added'])}" if delta["added"] else "",
+                f"-{len(delta['removed'])}" if delta["removed"] else "",
+                f"~{len(delta['changed'])}" if delta["changed"] else "",
+            ]
+            badges = [copy.source, f"{len(copy.entries)} entry(s) then"]
+            if live is None:
+                badges.append("this file is gone")
+            else:
+                badges.append(
+                    "unchanged since"
+                    if not any(delta.values())
+                    else "changed: " + " ".join(bit for bit in moved if bit)
+                )
+            if copy.error:
+                badges.append("not read")
+            records.append(
+                Record(
+                    id=copy.key,
+                    title=f"{copy.label_text} · {copy.profile} · {copy.when}",
+                    subtitle=f"{copy.chars:,} characters in "
+                    f"{len(copy.entries)} entry(s)"
+                    + (f" · {copy.error}" if copy.error else "")
+                    + ("" if live is None else f" · now {live.chars:,}"),
+                    badges=tuple(badges),
+                    fields=(
+                        ("archived file", f"{copy.profile}/{KIND_LABELS[copy.kind]}"),
+                        ("from", copy.source),
+                        ("when", copy.when),
+                        ("characters then", f"{copy.chars:,}"),
+                        ("entries then", str(len(copy.entries))),
+                        ("entries now", str(len(live.entries)) if live else "\u2014"),
+                        (
+                            "characters now",
+                            f"{live.chars:,}" if live is not None else "—",
+                        ),
+                        ("added since", str(len(delta["added"]))),
+                        ("removed since", str(len(delta["removed"]))),
+                        ("reworded since", str(len(delta["changed"]))),
+                        ("member", copy.member or "—"),
+                    ),
+                    links=((f"/memory/{copy.profile}/{copy.kind}", "Current file"),)
+                    if live is not None
+                    else (),
+                )
+            )
+        notes = list(current.history_notes[:4])
+        notes.append(
+            "entries are matched by title, then by word overlap, so a reworded one "
+            "usually reads as changed; the rest counts as added or removed"
+        )
+        if not current.history:
+            notes.append(
+                "no older copy holds memories: the pre-update snapshots keep state.db, "
+                "config.yaml and cron/ by design, so memory history comes from the "
+                "archives under <hermes root>/backups"
+            )
+        return build_collection(
+            "snapshots",
+            "Older copies",
+            "Memory files as they were, from the archives and snapshots under the "
+            "Hermes home, newest first, compared with the file today.",
+            "archived copies of a memory file",
+            records,
+            sources=sources(current),
+            extra_counts=(
+                Count(len(current.history), "archived memory files found"),
+                Count(len(current.history_scanned), "archives and snapshots looked in"),
+                Count(
+                    sum(1 for copy in current.history if copy.error),
+                    "copies that could not be read",
+                ),
+            ),
+            notes=tuple(notes),
+            as_of=current.as_of,
+        )
+
     def _entries_collection(current: _Snapshot) -> Collection:
         """One record per entry: the unit the agent writes."""
         records = [
@@ -526,6 +890,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         return [
             files_collection,
             _entries_collection(current),
+            _history_collection(current),
             _kinds_collection(current),
         ]
 
@@ -540,6 +905,8 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             Count(len(entries), "entries"),
             Count(sum(item.chars for item in current.files), "characters in total"),
             Count(current.locks, "lock files skipped"),
+            Count(len(current.history), "archived copies of a memory file"),
+            Count(len(current.history_scanned), "archives and snapshots looked in"),
         ]
         notes = []
         if current.config_note:
@@ -575,8 +942,10 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         )
 
     def detail(record_id: str) -> Record | None:
-        """One file or one entry."""
+        """One file, one entry, or one archived copy."""
         current = snapshot()
+        if record_id.startswith("history/"):
+            return _archive_record(current, record_id)
         parts = record_id.split("/")
         if len(parts) >= 3 and parts[-1].isdigit():
             return _entry_record(current, "/".join(parts[:-1]), int(parts[-1]))
@@ -624,6 +993,67 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             body=truncate(memory_file.text, BODY_CAP),
         )
 
+    def _archive_record(current: _Snapshot, record_id: str) -> Record | None:
+        """One archived copy: what it held, and what has moved since."""
+        copy = current.by_history_key().get(record_id)
+        if copy is None:
+            return None
+        live = current.file_for(copy.profile, copy.kind)
+        delta = (
+            delta_against(copy.entries, live.entries)
+            if live is not None
+            else {"added": (), "removed": (), "changed": ()}
+        )
+        return Record(
+            id=copy.key,
+            title=f"{copy.label_text} · {copy.profile} · {copy.when}",
+            subtitle=copy.text.strip().splitlines()[0][:120]
+            if copy.text.strip()
+            else "(empty)",
+            badges=(copy.source, f"{len(copy.entries)} entry(s) then")
+            + (("readable",) if not copy.error else ("not read",)),
+            fields=(
+                ("archived file", f"{copy.profile}/{KIND_LABELS[copy.kind]}"),
+                ("from", copy.source),
+                ("when", copy.when),
+                ("member", copy.member or "\u2014"),
+                ("characters then", f"{copy.chars:,}"),
+                ("entries then", str(len(copy.entries))),
+                ("characters now", f"{live.chars:,}" if live is not None else "\u2014"),
+                (
+                    "entries now",
+                    str(len(live.entries)) if live is not None else "\u2014",
+                ),
+                ("added since", str(len(delta["added"]))),
+                ("reworded since", str(len(delta["changed"]))),
+                ("removed since", str(len(delta["removed"]))),
+            ),
+            links=((f"/memory/{copy.profile}/{copy.kind}", "Current file"),)
+            if live is not None
+            else (),
+            body=truncate(copy.text, BODY_CAP) or "(nothing was archived)",
+        )
+
+    def _archived_rows(
+        entries: Sequence[MemoryEntry], archive: ArchiveCopy, *, live_link: str
+    ) -> list[Record]:
+        """Rows for archived entries: they link to the current file, never to a
+        history id, because an archived entry has no page of its own.
+
+        An archived entry's key looks like a live one (``profile/kind/index``) but its
+        index refers to the archive, so linking it would open the wrong entry -- or 404.
+        """
+        return [
+            Record(
+                id=f"{archive.key}/{entry.index}",
+                title=entry.title,
+                subtitle=f"was entry {entry.index} · {entry.chars:,} chars",
+                badges=(KIND_LABELS[entry.kind],),
+                href=live_link,
+            )
+            for entry in entries
+        ]
+
     def _entry_record(current: _Snapshot, file_key: str, index: int) -> Record | None:
         """The record for one entry."""
         memory_file = current.by_key().get(file_key)
@@ -669,9 +1099,85 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             body=truncate(entry.text, BODY_CAP),
         )
 
+    def _archive_sections(
+        current: _Snapshot, copy: ArchiveCopy
+    ) -> Sequence[Collection]:
+        """What the copy held, and the three ways entries have moved since."""
+        live = current.file_for(copy.profile, copy.kind)
+        live_link = (
+            f"/memory/{copy.profile}/{copy.kind}" if live is not None else copy.key
+        )
+        # Collection is frozen, so the note has to be decided before it is built
+        then_notes = (
+            ("this file no longer exists, so nothing is compared",)
+            if live is None
+            else ()
+        )
+        sections = [
+            build_collection(
+                "then",
+                f"Entries as they were ({copy.when})",
+                "Everything this archived copy held, in order.",
+                f"entries separated by {ENTRY_SEPARATOR} in the archived file",
+                _archived_rows(copy.entries, copy, live_link=live_link),
+                sources=(path_source(f"archive {copy.label}", copy.path),),
+                notes=then_notes,
+                as_of=current.as_of,
+            )
+        ]
+        if live is None:
+            return sections
+        delta = delta_against(copy.entries, live.entries)
+        for key, title, description, rows in (
+            (
+                "added",
+                "Added since",
+                "Entries in the file today that the copy did not have.",
+                [
+                    Record(
+                        id=entry.key,
+                        title=entry.title,
+                        subtitle=f"{entry.chars:,} chars",
+                        badges=(KIND_LABELS[entry.kind], "now"),
+                    )
+                    for entry in delta["added"]
+                ],
+            ),
+            (
+                "reworded",
+                "Reworded since",
+                "Entries whose opening line survived but whose text changed.",
+                _archived_rows(delta["changed"], copy, live_link=live_link),
+            ),
+            (
+                "removed",
+                "Removed since",
+                "Entries the copy had that the file has lost.",
+                _archived_rows(delta["removed"], copy, live_link=live_link),
+            ),
+        ):
+            if not rows:
+                continue
+            sections.append(
+                build_collection(
+                    key,
+                    title,
+                    description,
+                    f"entries that changed between the archive and today ({key})",
+                    rows,
+                    sources=(path_source(f"archive {copy.label}", copy.path),),
+                    as_of=current.as_of,
+                )
+            )
+        return sections
+
     def detail_sections(record_id: str) -> Sequence[Collection]:
-        """Behind a record: the entries in a file, or an entry's neighbours."""
+        """Behind a record: a file's entries, an entry's neighbours, or an
+        archive's diff."""
         current = snapshot()
+        if record_id.startswith("history/"):
+            copy = current.by_history_key().get(record_id)
+            return _archive_sections(current, copy) if copy else []
         parts = record_id.split("/")
         if len(parts) >= 3 and parts[-1].isdigit():
             file_key = "/".join(parts[:-1])
@@ -710,6 +1216,37 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 as_of=current.as_of,
             )
         ]
+        copies = [
+            copy
+            for copy in current.history
+            if copy.profile == memory_file.profile and copy.kind == memory_file.kind
+        ]
+        if copies:
+            sections.append(
+                build_collection(
+                    "history",
+                    "Older copies of this file",
+                    "Archived versions of this same file, newest first, each compared "
+                    "with it as it stands today.",
+                    "archived copies of this memory file",
+                    [
+                        Record(
+                            id=copy.key,
+                            title=f"{copy.when} · {copy.label_text}",
+                            subtitle=f"from {copy.source} · {copy.chars:,} characters "
+                            f"in {len(copy.entries)} entry(s)",
+                            badges=(copy.source, f"{len(copy.entries)} entries then"),
+                        )
+                        for copy in copies
+                    ],
+                    notes=(
+                        "entries are matched by their title line; the copy's page "
+                        "shows what was added, reworded and removed since",
+                        "what was added, reworded and removed since",
+                    ),
+                    as_of=current.as_of,
+                )
+            )
         siblings = [
             item
             for item in current.files

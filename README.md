@@ -57,6 +57,7 @@ tests/
   test_portal_memory.py 26 tests, the memory files and their budgets
   test_portal_plugins.py 26 tests, plugin discovery (and never running one)
   test_portal_fts.py 31 tests, message search: queries, excerpts, fallbacks
+  test_portal_memory_history.py 22 tests, older copies of the memory files
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -342,7 +343,7 @@ Eight domains, each with collections, drill-down and search:
 | logs | `$HERMES_HOME/logs`, `~/Library/Logs` | the last 200 KB of each file, error signatures | log files in scope — plus distinct signatures |
 | vault | the Obsidian vault (`--vault`, default `/Volumes/Data/MyObsidian`) | all notes indexed in memory, frontmatter, `[[wiki links]]`, checkboxes, the Kanban board | 762 notes — plus 1,116 links, 141 tags, 76 open items |
 | graph | `.code-review-graph/graph.db` (`--graph-db`) | precomputed tables: communities, risk, flows; FTS for search | 38 communities — plus 170,971 nodes, 1.5M edges (cached count) |
-| memory | `memories/MEMORY.md` and `USER.md`, per profile, plus `config.yaml` | every entry, split on the section sign, measured against its character budget | 6 files over 3 profiles — 42 entries; one at 2,200/2,200 |
+| memory | `memories/MEMORY.md` and `USER.md`, per profile, plus `config.yaml`, plus the archives under `backups/` | every entry, split on the section sign, measured against its character budget; older copies with what changed since | 6 files over 3 profiles — 42 entries; one at 2,200/2,200; 2 archived copies from 2026-08-25 |
 | plugins | `plugin.yaml` manifests under the bundled tree, `~/.hermes/plugins/`, each profile's, and `config.yaml` | names, kinds, versions, file lists, declared env vars and hooks | 105 plugins in 8 kinds; 41 declare requirements |
 
 P0 was skills/sessions/cron; P1 added usage, health and logs; P2 the two heavy planes,
@@ -375,6 +376,23 @@ That work also uncovered a bug in every domain: `Record.links` were built as
 as its text and the human label as its href — `<a href="Its folder">/vault?folder=Homelab</a>`,
 which navigated nowhere. The renderer matches the documented order now, and a test pins the
 rendered markup.
+
+**Memory history.** "What did memory say last week" is answerable, and the interesting
+part is *which* containers hold the answer. The per-profile `state-snapshots/*-pre-update/`
+directories do **not** keep memories — each ships a `manifest.json` listing exactly what it
+holds (state.db, config.yaml, cron/, a few databases), so the page reads that manifest and
+says so rather than scanning 126 MB for files that were never there. The archives under
+`<hermes root>/backups/*.zip` do keep them, so history comes from those: only the
+`memories/MEMORY.md` and `memories/USER.md` members are read, **in memory** (nothing is
+extracted, asserted by a test), and the `.env` sitting beside them in the same archive is
+never opened — asserted with a secret in a fixture archive.
+
+Each older copy gets a page: the archived text, and what moved since, split three ways.
+Entries are matched by their title line first, then by word overlap (40%+), because an
+entry whose opening line was rewritten otherwise reads as a removal plus an addition. On
+this machine the real archive shows the memory was substantially rewritten over three
+weeks — `+8 -9 ~1` — which is the honest reading, not a diff artefact: most unmatched
+entries share under a third of their words with today's.
 
 **Plugins.** What Hermes is extended with, read from `plugin.yaml` manifests **without
 running any of it**: the domain never imports a plugin, never executes its code, and
