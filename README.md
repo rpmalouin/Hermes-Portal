@@ -28,6 +28,7 @@ hermes/
     __init__.py
     model.py         Domain / Collection / Record / Count (counts carry rules)
     sources.py       read-only SQLite, root resolution, formatting, a TTL cache
+    fts.py           message search: FTS5 queries, excerpts around the hit, fallbacks
     state.py         favourites: the portal's own state file and the only writer
     taxonomy.py      the curated grouping behind the box tiles (presentation only)
     render.py        one generic page shape for every domain
@@ -55,6 +56,7 @@ tests/
   test_portal_ui.py  62 tests, favourites, theme, palette and the box tiles
   test_portal_memory.py 26 tests, the memory files and their budgets
   test_portal_plugins.py 26 tests, plugin discovery (and never running one)
+  test_portal_fts.py 31 tests, message search: queries, excerpts, fallbacks
 README.md
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -333,7 +335,7 @@ Eight domains, each with collections, drill-down and search:
 | Domain | Source | Reads | Headline |
 | --- | --- | --- | --- |
 | skills | 4 skill roots (shared + 3 profiles) | `SKILL.md` trees, frontmatter, `references/` | 158 unique names — plus 422 files, 55 boxes, 4 roots |
-| sessions | `state.db` | `sessions`, `messages` | 91 sessions — plus 9,504 messages |
+| sessions | `state.db`, incl. the `messages_fts` and `messages_fts_trigram` indexes | `sessions`, `messages`; search runs through the indexes | 91 sessions — plus 9,504 messages, all searchable |
 | cron | `cron/jobs.json`, `cron/executions.db`, `cron/output/` | jobs, runs, incidents, reports | 10 jobs — plus 1,000 executions |
 | usage | `state.db` | `sessions`, `session_model_usage` | 87 priced sessions — $16.68 estimated, 30.0M in / 2.6M out tokens, 4,292 calls |
 | health | `launchctl`, LaunchAgents plists, `state.db`, `lsof`, `cron/ticker_*`, file sizes | services, heartbeats, ports, tickers, storage | the services found — plus running/stale counts |
@@ -354,6 +356,25 @@ what links back to it. Tags come from frontmatter; open work comes from two conv
 because the vault has two — a checkbox line in an ordinary note is open while unchecked,
 and a **Kanban card is open while its `Status` field is not done**, since the board's
 checkboxes are not maintained. Reading the box alone reported 87 finished cards as open.
+
+**Searching messages.** The portal's search now reaches what was *said*, not only the
+titles of things. `messages_fts` answers first, ranked by relevance (`bm25`), and each hit
+is an excerpt **around** the match with the terms marked — where it used to show the
+message's first 200 characters, so a hit could display a paragraph that never mentions
+your search. A search box is not FTS5 syntax, so user text is sanitised into quoted prefix
+terms AND-ed together: `dashboard parser` finds messages containing both, and `-`, `"`,
+`*`, `NEAR(` and friends are read as ordinary text rather than raising or meaning
+something else. When the word index has nothing, the trigram index answers substrings
+(`ashboa` finds `dashboard`), and with no index at all the query degrades to `LIKE` — each
+path naming which index answered. The rendering escapes the excerpt and only then turns
+the markers into `<mark>`, so a message's own text cannot inject anything. A **Recent
+messages** collection on the sessions page makes the same corpus browsable.
+
+That work also uncovered a bug in every domain: `Record.links` were built as
+`(href, label)` and unpacked as `(label, href)`, so each detail link rendered with the URL
+as its text and the human label as its href — `<a href="Its folder">/vault?folder=Homelab</a>`,
+which navigated nowhere. The renderer matches the documented order now, and a test pins the
+rendered markup.
 
 **Plugins.** What Hermes is extended with, read from `plugin.yaml` manifests **without
 running any of it**: the domain never imports a plugin, never executes its code, and

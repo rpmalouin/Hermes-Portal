@@ -735,9 +735,10 @@ class TestSessionsDomain(unittest.TestCase):
         self.assertEqual(provider.count.value, 1)
 
     def test_usage_rollups_live_only_in_the_usage_domain(self) -> None:
-        """One home per fact: sessions keeps the index, usage keeps the maths."""
+        """One home per fact: sessions keeps the index and messages, usage the maths."""
         self.assertEqual(
-            [collection.key for collection in self.domain.collections()], ["sessions"]
+            [collection.key for collection in self.domain.collections()],
+            ["sessions", "messages"],
         )
         usage = server.default_registry(hermes_home=self.root).get("usage")
         self.assertEqual(

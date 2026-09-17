@@ -203,6 +203,10 @@ PAGE = Template(
         background: var(--badge-bg); border-radius: 6px; color: var(--badge-fg);
         font-size: 0.72rem; padding: 0.1rem 0.45rem;
     }
+    mark {
+        background: var(--accent); border-radius: 3px; color: #fff;
+        padding: 0 0.15rem;
+    }
     .meta { color: var(--muted-2); font-size: 0.78rem; }
     .notes {
         color: var(--warn); font-size: 0.82rem; margin: 0.5rem 0 0;
@@ -370,9 +374,26 @@ $body
 )
 
 
+# A search excerpt arrives with private markers around matched terms (see
+# hermes.portal.fts).  They are turned into markup only after the whole string is
+# escaped, so a message's own text can never inject anything.
+HIT_OPEN = "\x02"
+HIT_CLOSE = "\x03"
+
+
+def marks(text: str) -> str:
+    """Escape *text*, then wrap the fts markers in ``<mark>``."""
+    escaped = html.escape(text)
+    return escaped.replace(HIT_OPEN, "<mark>").replace(HIT_CLOSE, "</mark>")
+
+
 def rich(text: str) -> str:
-    """Escape *text*, then apply a minimal markdown pass (code, bold)."""
+    """Escape *text*, highlight search hits, then apply a minimal markdown pass."""
     escaped = html.escape(" ".join(str(text).split()), quote=True)
+    # markers are turned into markup only after escaping, so a message's own text can
+    # never inject anything; the markers themselves are unprintable and stripped from
+    # the text before they are inserted (see hermes.portal.fts)
+    escaped = escaped.replace(HIT_OPEN, "<mark>").replace(HIT_CLOSE, "</mark>")
     escaped = _CODE_RE.sub(r"<code>\1</code>", escaped)
     return _BOLD_RE.sub(r"<strong>\1</strong>", escaped)
 
@@ -879,9 +900,12 @@ def render_detail(
     table = f'<table class="fields">{fields}</table>' if fields else ""
     links = ""
     if record.links:
+        # every domain passes these as (href, label); the renderer had it the other way
+        # round, so each detail link shipped with the URL as its text and the label as
+        # its href, which navigated nowhere. The model documents the order now.
         anchors = " ".join(
             f'<a href="{html.escape(href, quote=True)}">{html.escape(label)}</a>'
-            for label, href in record.links
+            for href, label in record.links
         )
         links = f'<p class="lede">{anchors}</p>'
     body = ""

@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .. import fts
 from ..model import Collection, Count, Domain, Record, Source, build_collection
 from ..sources import (
     as_of,
@@ -270,6 +271,12 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         tool_messages = scalar(
             con, "select count(*) from messages where tool_name is not null", default=0
         )
+        indexes = fts.available_indexes(con)
+        indexed = (
+            scalar(con, f"select count(*) from {fts.WORD_INDEX}", default=0)
+            if fts.WORD_INDEX in indexes
+            else 0
+        )
         providers = scalar(
             con, "select count(distinct billing_provider) from sessions", default=0
         )
@@ -286,6 +293,17 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         notes = list(_notes(con, error))  # queries, so it must run before the close
         if sql_error:
             notes.append(sql_error)
+        notes.append(
+            f"message search runs through {fts.WORD_INDEX} (relevance ranked, excerpt "
+            "around the hit)"
+            if fts.WORD_INDEX in indexes
+            else "no FTS index over messages: search falls back to a LIKE scan"
+        )
+        if fts.SUBSTRING_INDEX in indexes:
+            notes.append(
+                f"{fts.SUBSTRING_INDEX} is present too, and answers substring queries "
+                "when the word index finds nothing"
+            )
         _close(con)
         return build_collection(
             "overview",
@@ -297,6 +315,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             sources=_sources(),
             extra_counts=(
                 Count(messages, "rows in the messages table"),
+                Count(indexed, f"rows in the {fts.WORD_INDEX} search index"),
                 Count(tool_messages, "messages produced by a tool"),
                 Count(providers, "distinct billing providers"),
             ),
@@ -371,6 +390,78 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
             as_of=as_of(),
         )
 
+    def _messages_collection() -> Collection:
+        """The newest messages: the corpus, browsable and not only searchable.
+
+        These excerpts are the *start* of each message, not a search excerpt -- nothing
+        is highlighted here, and the title says so by comparing with a search result,
+        which is an excerpt around the match.
+        """
+        con, error = _open()
+        total = fts.count_messages(con)
+        rows, note = fts.recent_messages(con, MESSAGES_CAP)
+        by_role, _role_error = query(
+            con,
+            "select role as role, count(*) as n from messages "
+            "group by role order by n desc limit 3",
+        )
+        tool_messages = scalar(
+            con, "select count(*) from messages where tool_name is not null", default=0
+        )
+        indexes = fts.available_indexes(con)
+        _close(con)
+        records = []
+        for row in rows:
+            role = str(row.get("role") or "?")
+            tool = str(row.get("tool_name") or "").strip()
+            session_id = str(row.get("session_id") or "")
+            records.append(
+                Record(
+                    id=f"message-{row.get('id')}",
+                    title=f"{role} message" + (f" · {tool}" if tool else ""),
+                    subtitle=row.get("excerpt") or "(empty)",
+                    badges=(role, "tool call" if tool else "text"),
+                    fields=(
+                        ("session", session_id),
+                        ("role", role),
+                        ("tool", tool or "—"),
+                        ("at", fmt_time(row.get("timestamp"))),
+                    ),
+                    links=((f"/sessions/{session_id}", "Open session"),)
+                    if session_id
+                    else (),
+                )
+            )
+        notes: list[str] = []
+        if error:
+            notes.append(error)
+        if note:
+            notes.append(note)
+        if not records:
+            notes.append("no messages table in state.db")
+        notes.append(
+            f"searchable through {fts.WORD_INDEX}"
+            if fts.WORD_INDEX in indexes
+            else "no FTS index: message search falls back to a LIKE scan"
+        )
+        return build_collection(
+            "messages",
+            "Recent messages",
+            "The newest messages across every session, newest first: what was actually "
+            "said, not just which sessions exist.",
+            f"messages from the messages table, newest {MESSAGES_CAP} shown",
+            records,
+            cap=MESSAGES_CAP,
+            sources=_sources(),
+            extra_counts=(
+                Count(total, "rows in the messages table"),
+                Count(tool_messages, "messages produced by a tool"),
+            )
+            + tuple(Count(int(row["n"]), f"{row['role']} messages") for row in by_role),
+            notes=tuple(notes),
+            as_of=as_of(),
+        )
+
     def collections(filters: Mapping[str, str] | None = None) -> Sequence[Collection]:
         """Drill-down collections for the sessions domain.
 
@@ -387,6 +478,7 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                 model=(active.get("model") or "").strip() or None,
                 provider=(active.get("provider") or "").strip() or None,
             ),
+            _messages_collection(),
         ]
 
     def detail(record_id: str) -> Record | None:
@@ -507,21 +599,49 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
         return [messages, usage]
 
     def search(needle: str, limit: int) -> Sequence[Record]:
-        """Search session titles and message bodies, using the FTS index."""
+        """Search message text through the FTS index, then session titles.
+
+        Messages come first because they are the content: a hit is an excerpt *around*
+        the match with the terms marked, ranked by relevance (``bm25``) rather than by
+        recency, and each row names the index that answered -- ``messages_fts``, the
+        trigram index when a substring was asked for, or ``like`` when neither exists.
+        """
         term = needle.strip()
         if not term:
             return []
         con, _error = _open()
         records: list[Record] = []
 
+        hits, index_used, _note = fts.search_messages(con, term, limit)
+        for hit in hits:
+            role = str(hit.get("role") or "?")
+            tool = str(hit.get("tool_name") or "").strip()
+            session_id = str(hit.get("session_id") or "")
+            records.append(
+                Record(
+                    id=f"message-{hit.get('id')}",
+                    title=f"{role} message" + (f" · {tool}" if tool else ""),
+                    subtitle=hit["excerpt"],
+                    badges=(
+                        "message",
+                        f"via {index_used}" if index_used else "message",
+                    )
+                    + (("tool call",) if tool else ()),
+                    fields=(("session", session_id), ("role", role)),
+                    links=((f"/sessions/{session_id}", "Open session"),)
+                    if session_id
+                    else (),
+                )
+            )
+
         session_columns = select_columns(con, "sessions", SESSION_COLUMNS)
-        if "title" in session_columns:
+        if "title" in session_columns and len(records) < limit:
             rows, _sql_error = query(
                 con,
                 f"select {', '.join(session_columns)} from sessions "
                 f"where coalesce(title,'') || ' ' || coalesce(model,'') like ? "
                 f"order by started_at desc limit ?",
-                (f"%{term}%", limit),
+                (f"%{term}%", limit - len(records)),
             )
             for row in rows:
                 record = _session_record(row)
@@ -530,40 +650,10 @@ def build_domain(hermes_home: Path | None = None) -> Domain:
                         id=f"session-{record.id}",
                         title=record.title,
                         subtitle=record.subtitle,
-                        badges=("session",),
+                        badges=("session", "title match"),
                         links=((f"/sessions/{record.id}", "Open session"),),
                     )
                 )
-
-        phrase = '"' + term.replace('"', '""') + '"'
-        message_columns = select_columns(con, "messages", MESSAGE_COLUMNS)
-        rows, sql_error = query(
-            con,
-            "select m.id as id, m.session_id as session_id, m.role as role, "
-            "m.tool_name as tool_name, m.content as content, m.timestamp as timestamp "
-            "from messages_fts f join messages m on m.id = f.rowid "
-            "where messages_fts match ? order by m.timestamp desc limit ?",
-            (phrase, limit),
-        )
-        if sql_error:
-            rows, _like_error = query(
-                con,
-                f"select {', '.join(message_columns)} from messages "
-                f"where content like ? order by timestamp desc limit ?"
-                if "content" in message_columns
-                else "select 1 where 0",
-                (f"%{term}%", limit),
-            )
-        for row in rows:
-            records.append(
-                Record(
-                    id=f"message-{_get(row, 'id')}",
-                    title=f"{_get(row, 'role', '?')} message",
-                    subtitle=snippet(_get(row, "content", ""), 200),
-                    badges=("message", str(_get(row, "tool_name", ""))),
-                    links=((f"/sessions/{_get(row, 'session_id', '')}", "Session"),),
-                )
-            )
         _close(con)
         return records[:limit]
 

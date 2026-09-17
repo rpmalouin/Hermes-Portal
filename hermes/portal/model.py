@@ -72,8 +72,9 @@ class Record:
     """One row of a collection, and the detail page behind it.
 
     ``fields`` are the ordered key/value rows of the detail page, ``links`` are
-    labelled hrefs into other views, and ``body`` is optional long text (already
-    plain text; the renderer escapes it).
+    ``(href, label)`` pairs into other views -- href first, as every domain builds
+    them -- and ``body`` is optional long text (already plain text; the renderer
+    escapes it).
     """
 
     id: str

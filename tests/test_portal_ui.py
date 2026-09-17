@@ -322,6 +322,22 @@ class RenderTestCase(unittest.TestCase):
         self.assertNotIn("</script", render.APP_JS.lower())
         self.assertNotIn("<script", render.APP_JS.lower())
 
+    def test_detail_links_render_their_href_and_label_the_right_way_round(self) -> None:
+        """The bug this pins: links were rendered with the label as the href.
+
+        Every domain builds ``((href, label), ...)``; the renderer unpacked them the
+        other way, so a "Its folder" link pointed at the literal string ``Its folder``
+        and went nowhere.
+        """
+        record = render.Record(
+            id="x", title="X", links=(("/vault?folder=Homelab", "Its folder"),)
+        )
+        page = render.render_detail(
+            self.registry.get("skills"), record, [], self.domains, "STAMP"
+        )
+        self.assertIn('<a href="/vault?folder=Homelab">Its folder</a>', page)
+        self.assertNotIn('href="Its folder"', page)
+
     def test_star_buttons_render_unpressed_and_are_hydrated(self) -> None:
         page = self.index()
         pressed = re.findall(r'<button class="star"[^>]*aria-pressed="(\w+)"', page)

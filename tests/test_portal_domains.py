@@ -16,6 +16,7 @@ Two things here are deliberately more than unit tests:
 
 from __future__ import annotations
 
+import datetime as dt
 import plistlib
 import sqlite3
 import sys
@@ -43,6 +44,16 @@ FAKE_TOKEN = "api_key=SUPERSECRET123"
 # whenever the suite runs.  Frozen at a literal, the fresh row aged past the 10-minute
 # staleness threshold and the health tests flipped from 1 stale to 2 on their own.
 NOW = time.time()
+# The usage rollups group sessions by their *local date*, so the fixture anchors its
+# sessions to local midnight rather than to "now minus N hours": with hour offsets the
+# day a session lands on depends on the hour the suite runs, and this file's by-day test
+# read three days at 17:00 and two in the morning.  Midnight and midnight-minus-a-day
+# are the same two days whenever the suite runs.
+MIDNIGHT = (
+    dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+)
+TODAY = MIDNIGHT
+YESTERDAY = MIDNIGHT - 86_400
 
 
 def make_state_db(path: Path) -> None:
@@ -78,7 +89,7 @@ def make_state_db(path: Path) -> None:
                 "Cheap session",
                 "small-model",
                 "deepseek",
-                NOW - 90_000,
+                YESTERDAY + 3_600,
                 4,
                 100,
                 50,
@@ -90,7 +101,7 @@ def make_state_db(path: Path) -> None:
                 "Expensive session",
                 "big-model",
                 "openrouter",
-                NOW - 80_000,
+                TODAY,
                 40,
                 9000,
                 4000,
@@ -102,7 +113,7 @@ def make_state_db(path: Path) -> None:
                 "Same day, other model",
                 "big-model",
                 "openrouter",
-                NOW - 70_000,
+                TODAY + 3_600,
                 12,
                 2000,
                 900,
@@ -114,7 +125,7 @@ def make_state_db(path: Path) -> None:
                 "Unpriced session",
                 "small-model",
                 "custom",
-                NOW - 60_000,
+                TODAY + 7_200,
                 2,
                 10,
                 5,
@@ -126,7 +137,7 @@ def make_state_db(path: Path) -> None:
                 "Yesterday",
                 "small-model",
                 "deepseek",
-                NOW - 200_000,
+                YESTERDAY,
                 3,
                 80,
                 40,
