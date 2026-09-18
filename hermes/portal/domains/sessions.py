@@ -46,6 +46,7 @@ from ..sources import (
     state_db,
     table_columns,
     truncate,
+    unreadable,
 )
 from .base import SnapshotDomain
 
@@ -345,6 +346,7 @@ class SessionsDomain(SnapshotDomain[None]):
             ),
             notes=tuple(notes),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _sessions_collection(
@@ -416,6 +418,7 @@ class SessionsDomain(SnapshotDomain[None]):
             extra_counts=tuple(extra),
             notes=tuple(notes),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _messages_collection(self) -> Collection:
@@ -464,15 +467,19 @@ class SessionsDomain(SnapshotDomain[None]):
         notes: list[str] = []
         if error:
             notes.append(error)
-        if note:
-            notes.append(note)
-        if not records:
-            notes.append("no messages table in state.db")
-        notes.append(
-            f"searchable through {fts.WORD_INDEX}"
-            if fts.WORD_INDEX in indexes
-            else "no FTS index: message search falls back to a LIKE scan"
-        )
+        else:
+            # Everything below is derived from the read: with no connection each
+            # of these would claim a table is missing, or that the corpus has no
+            # index, when the truth is that nothing was read.
+            if note:
+                notes.append(note)
+            if not records:
+                notes.append("no messages table in state.db")
+            notes.append(
+                f"searchable through {fts.WORD_INDEX}"
+                if fts.WORD_INDEX in indexes
+                else "no FTS index: message search falls back to a LIKE scan"
+            )
         return build_collection(
             "messages",
             "Recent messages",
@@ -489,6 +496,7 @@ class SessionsDomain(SnapshotDomain[None]):
             + tuple(Count(int(row["n"]), f"{row['role']} messages") for row in by_role),
             notes=tuple(notes),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def collections(
@@ -592,6 +600,7 @@ class SessionsDomain(SnapshotDomain[None]):
             notes=tuple(n for n in (error, sql_error) if n)
             + ("bodies are capped for the page; the full text lives in Hermes",),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
         usage = build_collection(
@@ -626,6 +635,7 @@ class SessionsDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(n for n in (error, usage_error) if n),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
         return [messages, usage]
 

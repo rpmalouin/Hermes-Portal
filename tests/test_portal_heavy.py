@@ -594,6 +594,11 @@ class GraphTestCase(unittest.TestCase):
         self.assertTrue(any("no graph database" in n for n in overview.notes))
         for collection in self.registry.safe_collections(absent):
             self.assertEqual(collection.count.value, 0)
+            # Absent is not the same as empty: the count says which it is.
+            self.assertTrue(
+                collection.count.definition.startswith("unavailable --"),
+                collection.count.definition,
+            )
 
 
 class RegistryTestCase(unittest.TestCase):

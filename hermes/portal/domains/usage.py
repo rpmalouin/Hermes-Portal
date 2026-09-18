@@ -42,6 +42,7 @@ from ..sources import (
     snippet,
     state_db,
     truncate,
+    unreadable,
 )
 from .base import SnapshotDomain
 
@@ -156,7 +157,7 @@ class UsageDomain(SnapshotDomain[None]):
                 f"{sessions - priced} of {sessions} sessions carry no cost estimate; "
                 "totals below cover the priced ones"
             )
-        if not usage_columns:
+        if not usage_columns and con is not None:
             notes.append("session_model_usage is absent, so api_call_count is unknown")
         _close(con)
         records = [
@@ -194,6 +195,7 @@ class UsageDomain(SnapshotDomain[None]):
             ),
             notes=tuple(notes),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _by_day(self) -> Collection:
@@ -215,6 +217,7 @@ class UsageDomain(SnapshotDomain[None]):
                 sources=self._sources(),
                 notes=(error or "no started_at column",),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             )
         sums = ", ".join(
             f"sum({column}) as {column}"
@@ -257,6 +260,7 @@ class UsageDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _by_model(self) -> Collection:
@@ -274,6 +278,7 @@ class UsageDomain(SnapshotDomain[None]):
                 sources=self._sources(),
                 notes=(error or "session_model_usage is absent from this database",),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             )
         sums = ", ".join(
             f"sum({column}) as {column}"
@@ -334,6 +339,7 @@ class UsageDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _by_provider(self) -> Collection:
@@ -355,6 +361,7 @@ class UsageDomain(SnapshotDomain[None]):
                 sources=self._sources(),
                 notes=(error or "no billing_provider column",),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             )
         sums = ", ".join(
             f"sum({column}) as {column}"
@@ -397,6 +404,7 @@ class UsageDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _top_sessions(self) -> Collection:
@@ -427,6 +435,7 @@ class UsageDomain(SnapshotDomain[None]):
                 sources=self._sources(),
                 notes=(error or "no cost column",),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             )
         rows, sql_error = query(
             con,
@@ -470,6 +479,7 @@ class UsageDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def collections(
@@ -545,6 +555,7 @@ class UsageDomain(SnapshotDomain[None]):
                 sources=self._sources(),
                 notes=tuple(note for note in (error, sql_error) if note),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             )
         ]
 

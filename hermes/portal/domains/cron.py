@@ -29,6 +29,7 @@ from ..model import (
     Source,
     build_collection,
     detail_url,
+    unavailable_count,
 )
 from ..sources import (
     as_of,
@@ -46,6 +47,7 @@ from ..sources import (
     snippet,
     to_datetime,
     truncate,
+    unreadable,
 )
 from .base import SnapshotDomain
 
@@ -233,7 +235,14 @@ class CronDomain(SnapshotDomain[None]):
             path_source("output/", self.output_dir, note="per-run reports"),
         )
 
-    def _jobs_and_notes(self) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+    def _jobs_and_notes(
+        self,
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...], str]:
+        """The job definitions, their caveats, and why they could not be read.
+
+        The third value is the load error, so a caller can report the count as
+        *unavailable* rather than as an empty schedule.
+        """
         jobs, error = _load_jobs(self.jobs_path)
         notes: list[str] = []
         if error:
@@ -253,11 +262,11 @@ class CronDomain(SnapshotDomain[None]):
                 f"{len(profile_stores)} per-profile execution store(s) exist and are "
                 "not aggregated here yet"
             )
-        return jobs, tuple(notes)
+        return jobs, tuple(notes), error
 
     def overview(self) -> Collection:
         """Headline numbers for the cron domain."""
-        jobs, notes = self._jobs_and_notes()
+        jobs, notes, jobs_error = self._jobs_and_notes()
         con, error = open_sqlite(self.exec_path)
         runs = 0
         if con is not None:
@@ -273,17 +282,20 @@ class CronDomain(SnapshotDomain[None]):
             cap=5,
             sources=self._sources(),
             extra_counts=(
-                Count(runs, "rows in cron/executions.db"),
+                unavailable_count(unreadable(error, self.exec_path))
+                if error
+                else Count(runs, "rows in cron/executions.db"),
                 Count(sum(1 for job in jobs if job.get("enabled")), "enabled jobs"),
                 Count(sum(1 for job in jobs if job.get("script")), "run a script"),
             ),
             notes=tuple(notes) + ((error,) if error else ()),
             as_of=as_of(),
+            unavailable=unreadable(jobs_error, self.jobs_path),
         )
 
     def _jobs_collection(self) -> Collection:
         """Every defined job."""
-        jobs, notes = self._jobs_and_notes()
+        jobs, notes, jobs_error = self._jobs_and_notes()
         return build_collection(
             "jobs",
             "Jobs",
@@ -299,11 +311,12 @@ class CronDomain(SnapshotDomain[None]):
             ),
             notes=notes,
             as_of=as_of(),
+            unavailable=unreadable(jobs_error, self.jobs_path),
         )
 
     def _runs_collection(self, job_id: str | None = None) -> Collection:
         """Execution history, optionally for one job."""
-        jobs, _notes = self._jobs_and_notes()
+        jobs, _notes, _jobs_error = self._jobs_and_notes()
         names = {str(job.get("id")): _job_title(job) for job in jobs}
         con, error = open_sqlite(self.exec_path)
         columns = select_columns(con, "executions", EXECUTION_COLUMNS)
@@ -374,6 +387,7 @@ class CronDomain(SnapshotDomain[None]):
             ),
             notes=notes,
             as_of=as_of(),
+            unavailable=unreadable(error, self.exec_path),
         )
 
     def _incidents_collection(self) -> Collection:
@@ -391,6 +405,7 @@ class CronDomain(SnapshotDomain[None]):
                 sources=self._sources(),
                 notes=(error or "no cron_incidents table in this database",),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.exec_path),
             )
         order = "first_seen_at" if "first_seen_at" in columns else "id"
         rows, sql_error = query(
@@ -443,6 +458,7 @@ class CronDomain(SnapshotDomain[None]):
             ),
             notes=tuple(n for n in (error, sql_error) if n),
             as_of=as_of(),
+            unavailable=unreadable(error, self.exec_path),
         )
 
     def collections(
@@ -461,7 +477,7 @@ class CronDomain(SnapshotDomain[None]):
 
     def detail(self, record_id: str) -> Record | None:
         """One job, with its prompt and script text."""
-        jobs, _notes = self._jobs_and_notes()
+        jobs, _notes, _jobs_error = self._jobs_and_notes()
         for job in jobs:
             if str(job.get("id")) == record_id:
                 record = _job_record(job)
@@ -537,7 +553,7 @@ class CronDomain(SnapshotDomain[None]):
         term = needle.strip().lower()
         if not term:
             return []
-        jobs, _notes = self._jobs_and_notes()
+        jobs, _notes, _jobs_error = self._jobs_and_notes()
         hits = []
         for job in jobs:
             haystack = " ".join(

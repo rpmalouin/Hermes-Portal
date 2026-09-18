@@ -50,6 +50,7 @@ from ..sources import (
     scrub,
     snippet,
     tail_text,
+    unreadable,
 )
 from .base import SnapshotDomain
 
@@ -326,6 +327,7 @@ class HealthDomain(SnapshotDomain[None]):
                 "are historical",
             ),
             as_of=as_of(),
+            unavailable=unreadable(error, self.state_db),
         )
 
     def _ports_collection(self) -> Collection:

@@ -44,6 +44,34 @@ class Count:
         return f"{self.value} ({self.definition})"
 
 
+def unavailable_definition(reason: str) -> str:
+    """The rule for a count whose source could not be read.
+
+    A count names the rule that produced it.  When the rule could not run, the
+    number cannot be ``0`` either: 0 asserts an empty set, and the truth is that
+    nobody looked.  The value stays 0 -- there are no records to show -- and the
+    definition carries the reason, so the page says *unavailable* instead of
+    quietly counting nothing.
+
+    Args:
+        reason: What could not be read, in a few words (``"state.db"``).
+
+    Returns:
+        A definition string for :class:`Count`, e.g.
+        ``"unavailable -- state.db could not be read"``.
+    """
+    return f"unavailable -- {reason}"
+
+
+def unavailable_count(reason: str) -> Count:
+    """A zero count for a source that could not be read.
+
+    The value is 0 because there are no records to show; the definition carries
+    the reason, which is the part a reader needs.
+    """
+    return Count(0, unavailable_definition(reason))
+
+
 @dataclass(frozen=True)
 class Source:
     """One place a collection read from, so a page can be audited."""
@@ -133,6 +161,7 @@ def build_collection(
     display: str = "rows",
     picker: Picker | None = None,
     metrics: Sequence[DETAIL_ROW] = (),
+    unavailable: str = "",
 ) -> Collection:
     """Assemble a :class:`Collection`, applying an optional display *cap*.
 
@@ -151,10 +180,18 @@ def build_collection(
         picker: Optional dropdown for narrowing this collection.
         metrics: Labelled headline values (``("Estimated cost", "$1.2345")``).
             Counts stay integers; money, durations and sizes belong here.
+        unavailable: Set when the collection's own source could not be read.
+            ``definition``, ``extra_counts`` and ``metrics`` are replaced, because
+            each of them is a claim *about that source* -- a number derived from a
+            read that never happened is the same bug as a count that says 0.
 
     Returns:
         A :class:`Collection`; ``truncated`` is derived, never passed in.
     """
+    if unavailable:
+        definition = unavailable_definition(unavailable)
+        extra_counts = ()
+        metrics = ()
     kept = tuple(records[:cap]) if cap is not None else tuple(records)
     return Collection(
         key=key,
@@ -264,7 +301,7 @@ def failed_collection(key: str, title: str, error: str, as_of: str = "") -> Coll
         key=key,
         title=title,
         description="This adapter failed; the portal is still up.",
-        count=Count(0, "unavailable -- the adapter raised"),
+        count=unavailable_count("the adapter raised"),
         notes=(scrub(error),),
         as_of=as_of,
     )

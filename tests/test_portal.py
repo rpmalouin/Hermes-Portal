@@ -423,6 +423,44 @@ class TestModel(unittest.TestCase):
         count = Count(157, "unique frontmatter names")
         self.assertEqual(str(count), "157 (unique frontmatter names)")
 
+    def test_an_unavailable_collection_claims_nothing_derived(self) -> None:
+        """A read that did not happen cannot produce a number, not even 0.
+
+        The count's value stays 0 (there are no records) but its rule says why,
+        and the derived numbers -- extra counts, headline metrics -- are dropped
+        rather than reported as zeros measured from a source nobody opened.
+        """
+        collection = build_collection(
+            "k",
+            "T",
+            "d",
+            "rows in state.db",
+            [],
+            extra_counts=(Count(5, "archived"),),
+            metrics=(("Estimated cost", "$0.0000"),),
+            unavailable="state.db could not be read",
+        )
+        self.assertEqual(collection.count.value, 0)
+        self.assertEqual(
+            str(collection.count), "0 (unavailable -- state.db could not be read)"
+        )
+        self.assertEqual(collection.extra_counts, ())
+        self.assertEqual(collection.metrics, ())
+
+    def test_a_readable_collection_keeps_its_numbers(self) -> None:
+        """The ordinary path is untouched: no reason, no replacement."""
+        collection = build_collection(
+            "k",
+            "T",
+            "d",
+            "rows in state.db",
+            [],
+            extra_counts=(Count(5, "archived"),),
+            unavailable="",
+        )
+        self.assertEqual(collection.count.definition, "rows in state.db")
+        self.assertEqual(len(collection.extra_counts), 1)
+
     def test_build_collection_counts_everything_it_was_given(self) -> None:
         records = [Record(id=str(n), title=f"r{n}") for n in range(10)]
         collection = build_collection("k", "T", "d", "the rule", records, cap=3)
@@ -751,6 +789,28 @@ class TestSessionsDomain(unittest.TestCase):
         provider = self.domain.collections({"provider": "deepseek"})[0]
         self.assertEqual(provider.count.value, 1)
 
+    def test_an_unreadable_state_db_is_unavailable_not_zero(self) -> None:
+        """Every number on the page traces to state.db, so none of them survive.
+
+        The session index, the messages collection and the per-record sections all
+        report the rule that could not run, rather than an empty set.
+        """
+        (self.root / "state.db").write_bytes(b"\x00\x01not a database" * 64)
+        domain = sessions_domain.build_domain(hermes_home=self.root)
+        for collection in domain.collections():
+            with self.subTest(collection=collection.key):
+                self.assertTrue(
+                    collection.count.definition.startswith("unavailable --"),
+                    collection.count.definition,
+                )
+                self.assertEqual(collection.extra_counts, ())
+        # Derived diagnostics are silent too: no connection, so no claim that a
+        # table is missing or that the corpus has no index.
+        messages = next(c for c in domain.collections() if c.key == "messages")
+        self.assertTrue(any("not a database" in note for note in messages.notes))
+        self.assertFalse(any("no FTS index" in note for note in messages.notes))
+        self.assertFalse(any("no messages table" in note for note in messages.notes))
+
     def test_an_unreadable_state_db_is_named_not_blamed_on_a_column(self) -> None:
         """The diagnosis has to survive as far as the page.
 
@@ -926,6 +986,42 @@ class TestCronDomain(unittest.TestCase):
         self.assertEqual([hit.id for hit in hits], [JOB_ID])
         self.assertEqual(self.domain.search("", 5), [])
 
+    def test_a_malformed_jobs_json_is_unavailable_not_an_empty_schedule(self) -> None:
+        """Malformed is not zero: the file was there and could not be read."""
+        (self.root / "cron" / "jobs.json").write_text("{oops", encoding="utf-8")
+        domain = cron_domain.build_domain(hermes_home=self.root)
+        collection = domain.collections()[0]
+        self.assertEqual(
+            collection.count.definition,
+            "unavailable -- jobs.json could not be read",
+        )
+        self.assertEqual(collection.extra_counts, ())
+
+    def test_an_unreadable_executions_db_leaves_the_definitions_alone(self) -> None:
+        """Two sources in one domain: only the collections that read the broken
+        one go unavailable, and the job definitions keep their real count."""
+        (self.root / "cron" / "executions.db").write_bytes(b"\x00\x01nope" * 64)
+        domain = cron_domain.build_domain(hermes_home=self.root)
+        jobs, runs, incidents = domain.collections()
+        self.assertEqual(jobs.count.definition, "entries in cron/jobs.json")
+        self.assertEqual(jobs.count.value, 2)
+        self.assertEqual(
+            runs.count.definition, "unavailable -- executions.db could not be read"
+        )
+        self.assertEqual(
+            incidents.count.definition,
+            "unavailable -- executions.db could not be read",
+        )
+        overview = domain.overview()
+        self.assertEqual(overview.count.definition, "entries in cron/jobs.json")
+        self.assertTrue(
+            any(
+                count.definition == "unavailable -- executions.db could not be read"
+                for count in overview.extra_counts
+            ),
+            [count.definition for count in overview.extra_counts],
+        )
+
     def test_a_renamed_jobs_shape_is_named_not_counted_as_zero(self) -> None:
         """A valid file whose keys moved is the one failure a reader cannot tell
         apart from an empty schedule, so it names what it found instead."""
@@ -936,9 +1032,8 @@ class TestCronDomain(unittest.TestCase):
         domain = cron_domain.build_domain(hermes_home=self.root)
         collection = domain.collections()[0]
         self.assertEqual(collection.count.value, 0)
-        self.assertTrue(
-            any("unrecognized jobs.json shape" in note for note in collection.notes),
-            collection.notes,
+        self.assertEqual(
+            collection.count.definition, "unavailable -- jobs.json could not be read"
         )
         self.assertTrue(any("job_definitions" in note for note in collection.notes))
 

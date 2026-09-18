@@ -289,6 +289,27 @@ class TestUsageDomain(BaseP1):
             any("carry no cost estimate" in note for note in overview.notes)
         )
 
+    def test_an_unreadable_state_db_makes_every_rollup_unavailable(self) -> None:
+        """Spend, tokens, models and providers all come from one file.
+
+        None of them can be reported as 0 when that file was not read -- the
+        headline metrics included, since they are the same claims in larger type.
+        """
+        (self.root / "state.db").write_bytes(b"\x00\x01not a database" * 64)
+        domain = usage_domain.build_domain(hermes_home=self.root)
+        for collection in [domain.overview(), *domain.collections()]:
+            with self.subTest(collection=collection.key):
+                self.assertTrue(
+                    collection.count.definition.startswith("unavailable --"),
+                    collection.count.definition,
+                )
+                self.assertEqual(collection.extra_counts, ())
+                self.assertEqual(collection.metrics, ())
+        self.assertFalse(
+            any("is absent" in note for note in domain.overview().notes),
+            domain.overview().notes,
+        )
+
     def test_by_day_groups_on_the_local_date(self) -> None:
         by_day = next(c for c in self.domain.collections() if c.key == "by-day")
         self.assertEqual(by_day.count.value, 2)  # today and yesterday
@@ -371,6 +392,27 @@ class TestHealthDomain(BaseP1):
                 "",
             )
         return "", f"unexpected command {argv[0]}"
+
+    def test_an_unreadable_state_db_only_takes_the_heartbeats(self) -> None:
+        """One broken file must not silence the collections that never read it.
+
+        Services come from launchctl, ports from lsof, storage and tickers from
+        the filesystem, so those keep reporting real numbers.
+        """
+        (self.root / "state.db").write_bytes(b"\x00\x01not a database" * 64)
+        domain = health_domain.build_domain(hermes_home=self.root)
+        collections = {c.key: c for c in domain.collections()}
+        self.assertEqual(
+            collections["heartbeats"].count.definition,
+            "unavailable -- state.db could not be read",
+        )
+        self.assertEqual(collections["heartbeats"].extra_counts, ())
+        for key in ("services", "ports", "tickers", "storage"):
+            with self.subTest(collection=key):
+                self.assertFalse(
+                    collections[key].count.definition.startswith("unavailable"),
+                    collections[key].count.definition,
+                )
 
     def test_services_are_joined_with_their_live_state(self) -> None:
         services = next(c for c in self.domain.collections() if c.key == "services")
@@ -795,9 +837,11 @@ class CronPrimitivesTestCase(BaseP1):
         self.assertTrue(any("jobs.json" in source.label for source in sources))
 
     def test_jobs_and_notes_returns_both_halves(self) -> None:
-        jobs, notes = self.cron._jobs_and_notes()
+        jobs, notes, error = self.cron._jobs_and_notes()
         self.assertTrue(jobs)
         self.assertIsInstance(notes, tuple)
+        # The third value is what lets a caller say "unavailable" instead of "0".
+        self.assertEqual(error, "")
 
     def test_every_collection_builder_counts_what_it_carries(self) -> None:
         for collection in (

@@ -107,6 +107,23 @@ def open_sqlite(path: Path) -> tuple[sqlite3.Connection | None, str]:
     return con, ""
 
 
+def unreadable(error: str, path: Path) -> str:
+    """The reason a count is unavailable, when *error* says its source did not open.
+
+    For a call site to hand straight to ``build_collection(unavailable=...)``:
+    returns ``""`` when the read succeeded, so the ordinary path needs no branch
+    beyond the call itself.
+
+    Args:
+        error: What :func:`open_sqlite` returned.
+        path: The database that was being opened.
+
+    Returns:
+        ``""``, or ``"<name> could not be read"``.
+    """
+    return f"{Path(path).name} could not be read" if error else ""
+
+
 def query(
     con: sqlite3.Connection | None,
     sql: str,

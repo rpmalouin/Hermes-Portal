@@ -45,6 +45,7 @@ from ..sources import (
     scalar,
     snippet,
     truncate,
+    unreadable,
 )
 from .base import SnapshotDomain
 
@@ -204,6 +205,7 @@ class GraphDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(notes),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def overview(self) -> Collection:
@@ -262,6 +264,7 @@ class GraphDomain(SnapshotDomain[None]):
             ),
             notes=tuple(notes),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _communities_collection(self) -> Collection:
@@ -314,6 +317,7 @@ class GraphDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _risky_collection(self) -> Collection:
@@ -362,6 +366,7 @@ class GraphDomain(SnapshotDomain[None]):
             extra_counts=(Count(scored, "nodes with a risk score"),),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _callers_collection(self) -> Collection:
@@ -404,6 +409,7 @@ class GraphDomain(SnapshotDomain[None]):
                 "the builder's precomputed count is used instead",
             ),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def _flows_collection(self) -> Collection:
@@ -442,6 +448,7 @@ class GraphDomain(SnapshotDomain[None]):
             sources=self._sources(),
             notes=tuple(note for note in (error, sql_error) if note),
             as_of=as_of(),
+            unavailable=unreadable(error, self.db_path),
         )
 
     def collections(
@@ -569,6 +576,7 @@ class GraphDomain(SnapshotDomain[None]):
                 ],
                 sources=self._sources(),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             )
 
         sections = [
@@ -589,6 +597,7 @@ class GraphDomain(SnapshotDomain[None]):
                 ],
                 sources=self._sources(),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             ),
             build_collection(
                 "community",
@@ -606,6 +615,7 @@ class GraphDomain(SnapshotDomain[None]):
                 ],
                 sources=self._sources(),
                 as_of=as_of(),
+                unavailable=unreadable(error, self.db_path),
             ),
         ]
         notes = tuple(
