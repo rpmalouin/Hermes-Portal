@@ -55,3 +55,49 @@ jobs:
           python -m pip install --quiet -e .
           python -m hermes.portal --help > /dev/null
           hermes --help > /dev/null
+
+  browser:
+    # The controls on the page are JavaScript.  Nothing in the suite above can tell whether
+    # they work -- it asserts markup, headers and server behaviour, and two bugs shipped
+    # that way: a CSP that blocked /app.js, and a script that ran before the elements it
+    # wires existed.  This job clicks them, which is the only thing that would have caught
+    # either.  Cheap (a checkout, no install of the package) and independent of the matrix.
+    name: browser click-check
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"          # the check uses the global WebSocket (node >= 21)
+
+      - name: Serve the portal on an empty home
+        run: |
+          mkdir -p /tmp/ci-home
+          python -m hermes.portal --hermes-home /tmp/ci-home --no-state --port 8087 &
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:8087/ && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://127.0.0.1:8087/ || { echo "the portal never came up"; exit 1; }
+
+      - name: Start headless Chrome with a debug port
+        run: |
+          # --no-sandbox is required on the runners; --no-proxy-server because they export
+          # proxy variables that Chrome would otherwise send 127.0.0.1 through
+          google-chrome --headless=new --disable-gpu --no-sandbox --no-proxy-server \
+            --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-ci about:blank &
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:9222/json/version && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://127.0.0.1:9222/json/version || { echo "Chrome never came up"; exit 1; }
+
+      - name: Click every control
+        run: node tools/click_check.js http://127.0.0.1:8087/

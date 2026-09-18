@@ -725,14 +725,28 @@ through its own MCP tools.
 ## Tests and checks
 
 ```sh
-cd <project-root>
-python3 -m unittest discover -s tests -t .   # 156 tests, ~3.6s
-python3 -m unittest tests.test_smoke         # same suite
-python3 tests/test_smoke.py                  # works directly too
+python3 -m unittest discover -s tests -t .        # 440 tests, ~25s, no install needed
+uvx ruff@0.14.4 check .                           # lint, configured in pyproject.toml
+uvx ruff@0.14.4 format --check .
+
+# the page's controls are JavaScript, so they need a browser to be sure of:
+node tools/click_check.js http://127.0.0.1:8087/  # needs a Chromium on the CDP port
+```
+
+All three run in CI (`.github/workflows/tests.yml`). The suite runs on **3.11 and 3.12 on Linux**
+— where the only macOS-shaped code (the two health probes and the vault default) is patched, so a
+green run there is real portability evidence — and the browser check runs in its own job after
+them, because no assertion about markup, headers or responses can tell you whether a button
+works. Two bugs proved that: a CSP that blocked `/app.js`, and a script that ran before the
+elements it wires existed. Both shipped green through a 400-test suite.
+
+```sh
+python3 -m unittest tests.test_smoke              # one module
+python3 tests/test_smoke.py                       # works directly too
 
 # through the installed package, from an unrelated cwd:
 .venv/bin/python -m unittest discover -s <project-root>/tests -t <project-root>
-.venv/bin/hermes                             # console script, any cwd
+.venv/bin/hermes                                  # console script, any cwd
 ```
 
 The suite is hermetic: the only subprocesses are Python interpreters, the only
