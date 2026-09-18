@@ -144,7 +144,14 @@ class TestSet(AgentsTestCase):
         self.assertIn("default", self.labels())
         root = next(a for a in self.index.agents if a.is_root)
         self.assertEqual(root.base, self.home)
-        self.assertTrue(str(self.record("default").fields[0][1]) == str(self.home))
+        fields = dict(self.record("default").fields)
+        self.assertEqual(fields["home"], str(self.home))
+        # A row's meta line takes the leading fields (render.py: fields[:4]), so the
+        # activity leads and the paths trail -- pinned rather than left to drift.
+        self.assertEqual(
+            [key for key, _value in self.record("default").fields[:2]],
+            ["sessions", "messages"],
+        )
 
 
 class TestRollup(AgentsTestCase):

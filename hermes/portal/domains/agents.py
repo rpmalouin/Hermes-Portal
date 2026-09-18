@@ -345,24 +345,28 @@ class AgentsDomain(SnapshotDomain[AgentIndex]):
             badges = (*badges, f"{agent.sessions} session(s)")
         if agent.store_readable and agent.heartbeats:
             badges = (*badges, f"beat {fmt_ago(agent.last_heartbeat)}")
-        fields: list[tuple[str, str]] = [("home", str(agent.base))]
+        fields: list[tuple[str, str]] = []
         if agent.store_readable:
             fields.extend(
                 [
-                    ("store", str(agent.store)),
-                    ("size", human_size(agent.store_size)),
-                    ("last written", fmt_ago(agent.store_modified)),
                     ("sessions", str(agent.sessions)),
                     ("messages", f"{agent.messages:,}"),
                     ("newest session", agent.latest_session or "\u2014"),
                     ("backends seen", str(agent.heartbeats)),
                     ("last heartbeat", fmt_ago(agent.last_heartbeat)),
+                    # Last written, size and the paths sit after the activity: a row's
+                    # meta line leads with them: "12 session(s) · 555 messages" is what
+                    # an operator scans for.
+                    ("last written", fmt_ago(agent.store_modified)),
+                    ("size", human_size(agent.store_size)),
+                    ("store", str(agent.store)),
+                    ("home", str(agent.base)),
                 ]
             )
         else:
             # A store that was not read has no numbers to show.  Saying so is the point:
             # "0 sessions" beside an unreadable file is a claim nobody made.
-            fields.append(("read", agent.store_error))
+            fields.extend([("home", str(agent.base)), ("read", agent.store_error)])
         if agent.jobs:
             fields.append(("cron jobs", str(len(agent.jobs))))
         return Record(

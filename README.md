@@ -12,7 +12,10 @@ No pull requests, you are free to fork it, use it, enhance it on your own.
 [Why it exists](#why-this-project) is the next section; [how to run
 it](#how-to-use-this) is the one after that. The layout:
 
-![The Hermes Portal index page: the eight skill tiles across the top, then a card per domain](/docs/screenshot.png)
+![The Hermes Portal index page, a demo instance: the eight skill tiles across the top, then a card per domain](/docs/screenshot.png)
+
+*The page above is a demo instance -- a fixture Hermes home, not this machine, and the
+`demo-*` agent names are fixtures too.*
 
 ```
 hermes/
