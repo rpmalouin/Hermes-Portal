@@ -19,8 +19,9 @@ details that would otherwise mislead:
   knows they were seen and not forgotten;
 * a running session loads its copy of memory when it starts, so the file on disk can be
   newer than what an agent is thinking with, and the page says so;
-* history lives in :mod:`hermes.portal.domains.memory_files` -- this module serves the
-  files as they are, that one knows what they were.
+* history lives in :mod:`hermes.portal.domains.memory_files` (the copies, and the diff
+  against today) and :mod:`hermes.portal.domains.memory_archive` (how the archive is
+  shown) -- this module serves the files as they are, those two know what they were.
 
 This is the first domain written as a class (:class:`MemoryDomain` over
 :class:`~hermes.portal.domains.base.SnapshotDomain`) rather than as a factory full of
@@ -57,6 +58,12 @@ from ..sources import (
     truncate,
 )
 from .base import SnapshotDomain
+from .memory_archive import (
+    BODY_CAP,
+    archive_record,
+    archive_sections,
+    history_collection,
+)
 from .memory_files import (
     ENTRY_SEPARATOR,
     KIND_LABELS,
@@ -64,12 +71,10 @@ from .memory_files import (
     ArchiveCopy,
     MemoryEntry,
     collect_history,
-    delta_against,
 )
 
 LIMIT_KEYS = {"memory": "memory_char_limit", "user": "user_char_limit"}
 ENTRIES_CAP = 400
-BODY_CAP = 8000
 TITLE_CHARS = 92
 NEIGHBOURS = 12
 
@@ -442,98 +447,6 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
             as_of=current.as_of,
         )
 
-    def _history_collection(self, current: _Snapshot) -> Collection:
-        """Older copies of the memory files, newest first, with what changed since."""
-        records = []
-        for copy in current.history:
-            live = current.file_for(copy.profile, copy.kind)
-            delta = (
-                delta_against(copy.entries, live.entries)
-                if live is not None
-                else {"added": (), "removed": (), "changed": ()}
-            )
-            moved = [
-                f"+{len(delta['added'])}" if delta["added"] else "",
-                f"-{len(delta['removed'])}" if delta["removed"] else "",
-                f"~{len(delta['changed'])}" if delta["changed"] else "",
-            ]
-            badges = [copy.source, f"{len(copy.entries)} entry(s) then"]
-            if live is None:
-                badges.append("this file is gone")
-            else:
-                badges.append(
-                    "unchanged since"
-                    if not any(delta.values())
-                    else "changed: " + " ".join(bit for bit in moved if bit)
-                )
-            if copy.error:
-                badges.append("not read")
-            records.append(
-                Record(
-                    id=copy.key,
-                    title=f"{copy.label_text} · {copy.profile} · {copy.when}",
-                    subtitle=f"{copy.chars:,} characters in "
-                    f"{len(copy.entries)} entry(s)"
-                    + (f" · {copy.error}" if copy.error else "")
-                    + ("" if live is None else f" · now {live.chars:,}"),
-                    badges=tuple(badges),
-                    fields=(
-                        ("archived file", f"{copy.profile}/{KIND_LABELS[copy.kind]}"),
-                        ("from", copy.source),
-                        ("when", copy.when),
-                        ("characters then", f"{copy.chars:,}"),
-                        ("entries then", str(len(copy.entries))),
-                        ("entries now", str(len(live.entries)) if live else "\u2014"),
-                        (
-                            "characters now",
-                            f"{live.chars:,}" if live is not None else "—",
-                        ),
-                        ("added since", str(len(delta["added"]))),
-                        ("removed since", str(len(delta["removed"]))),
-                        ("reworded since", str(len(delta["changed"]))),
-                        ("member", copy.member or "—"),
-                    ),
-                    links=(
-                        (
-                            detail_url("memory", f"{copy.profile}/{copy.kind}"),
-                            "Current file",
-                        ),
-                    )
-                    if live is not None
-                    else (),
-                )
-            )
-        notes = list(current.history_notes[:4])
-        notes.append(
-            "entries are matched by title, then by word overlap, so a reworded one "
-            "usually reads as changed; the rest counts as added or removed"
-        )
-        if not current.history:
-            notes.append(
-                "no older copy holds memories: the pre-update snapshots keep state.db, "
-                "config.yaml and cron/ by design, so memory history comes from the "
-                "archives under <hermes root>/backups"
-            )
-        return build_collection(
-            "snapshots",
-            "Older copies",
-            "Memory files as they were, from the archives and snapshots under the "
-            "Hermes home, newest first, compared with the file today.",
-            "archived copies of a memory file",
-            records,
-            sources=self._sources(current),
-            extra_counts=(
-                Count(len(current.history), "archived memory files found"),
-                Count(len(current.history_scanned), "archives and snapshots looked in"),
-                Count(
-                    sum(1 for copy in current.history if copy.error),
-                    "copies that could not be read",
-                ),
-            ),
-            notes=tuple(notes),
-            as_of=current.as_of,
-        )
-
     def _entries_collection(self, current: _Snapshot) -> Collection:
         """One record per entry: the unit the agent writes."""
         records = [
@@ -626,7 +539,7 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
         return [
             files_collection,
             self._entries_collection(current),
-            self._history_collection(current),
+            history_collection(current, self._sources(current)),
             self._kinds_collection(current),
         ]
 
@@ -681,7 +594,7 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
         """One file, one entry, or one archived copy."""
         current = self.snapshot()
         if record_id.startswith("history/"):
-            return self._archive_record(current, record_id)
+            return archive_record(current, record_id)
         parts = record_id.split("/")
         if len(parts) >= 3 and parts[-1].isdigit():
             return self._entry_record(current, "/".join(parts[:-1]), int(parts[-1]))
@@ -728,73 +641,6 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
             links=(("/memory", "All memory"),),
             body=truncate(memory_file.text, BODY_CAP),
         )
-
-    def _archive_record(self, current: _Snapshot, record_id: str) -> Record | None:
-        """One archived copy: what it held, and what has moved since."""
-        copy = current.by_history_key().get(record_id)
-        if copy is None:
-            return None
-        live = current.file_for(copy.profile, copy.kind)
-        delta = (
-            delta_against(copy.entries, live.entries)
-            if live is not None
-            else {"added": (), "removed": (), "changed": ()}
-        )
-        return Record(
-            id=copy.key,
-            title=f"{copy.label_text} · {copy.profile} · {copy.when}",
-            subtitle=copy.text.strip().splitlines()[0][:120]
-            if copy.text.strip()
-            else "(empty)",
-            badges=(copy.source, f"{len(copy.entries)} entry(s) then")
-            + (("readable",) if not copy.error else ("not read",)),
-            fields=(
-                ("archived file", f"{copy.profile}/{KIND_LABELS[copy.kind]}"),
-                ("from", copy.source),
-                ("when", copy.when),
-                ("member", copy.member or "\u2014"),
-                ("characters then", f"{copy.chars:,}"),
-                ("entries then", str(len(copy.entries))),
-                ("characters now", f"{live.chars:,}" if live is not None else "\u2014"),
-                (
-                    "entries now",
-                    str(len(live.entries)) if live is not None else "\u2014",
-                ),
-                ("added since", str(len(delta["added"]))),
-                ("reworded since", str(len(delta["changed"]))),
-                ("removed since", str(len(delta["removed"]))),
-            ),
-            links=(
-                (detail_url("memory", f"{copy.profile}/{copy.kind}"), "Current file"),
-            )
-            if live is not None
-            else (),
-            body=truncate(copy.text, BODY_CAP) or "(nothing was archived)",
-        )
-
-    def _archived_rows(
-        self,
-        entries: Sequence[MemoryEntry],
-        archive: ArchiveCopy,
-        *,
-        live_link: str,
-    ) -> list[Record]:
-        """Rows for archived entries: they link to the current file, never to a
-        history id, because an archived entry has no page of its own.
-
-        An archived entry's key looks like a live one (``profile/kind/index``) but its
-        index refers to the archive, so linking it would open the wrong entry -- or 404.
-        """
-        return [
-            Record(
-                id=f"{archive.key}/{entry.index}",
-                title=entry.title,
-                subtitle=f"was entry {entry.index} · {entry.chars:,} chars",
-                badges=(KIND_LABELS[entry.kind],),
-                href=live_link,
-            )
-            for entry in entries
-        ]
 
     def _entry_record(
         self, current: _Snapshot, file_key: str, index: int
@@ -843,87 +689,13 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
             body=truncate(entry.text, BODY_CAP),
         )
 
-    def _archive_sections(
-        self, current: _Snapshot, copy: ArchiveCopy
-    ) -> Sequence[Collection]:
-        """What the copy held, and the three ways entries have moved since."""
-        live = current.file_for(copy.profile, copy.kind)
-        live_link = (
-            detail_url("memory", f"{copy.profile}/{copy.kind}")
-            if live is not None
-            else copy.key
-        )
-        # Collection is frozen, so the note has to be decided before it is built
-        then_notes = (
-            ("this file no longer exists, so nothing is compared",)
-            if live is None
-            else ()
-        )
-        sections = [
-            build_collection(
-                "then",
-                f"Entries as they were ({copy.when})",
-                "Everything this archived copy held, in order.",
-                f"entries separated by {ENTRY_SEPARATOR} in the archived file",
-                self._archived_rows(copy.entries, copy, live_link=live_link),
-                sources=(path_source(f"archive {copy.label}", copy.path),),
-                notes=then_notes,
-                as_of=current.as_of,
-            )
-        ]
-        if live is None:
-            return sections
-        delta = delta_against(copy.entries, live.entries)
-        for key, title, description, rows in (
-            (
-                "added",
-                "Added since",
-                "Entries in the file today that the copy did not have.",
-                [
-                    Record(
-                        id=entry.key,
-                        title=entry.title,
-                        subtitle=f"{entry.chars:,} chars",
-                        badges=(KIND_LABELS[entry.kind], "now"),
-                    )
-                    for entry in delta["added"]
-                ],
-            ),
-            (
-                "reworded",
-                "Reworded since",
-                "Entries whose opening line survived but whose text changed.",
-                self._archived_rows(delta["changed"], copy, live_link=live_link),
-            ),
-            (
-                "removed",
-                "Removed since",
-                "Entries the copy had that the file has lost.",
-                self._archived_rows(delta["removed"], copy, live_link=live_link),
-            ),
-        ):
-            if not rows:
-                continue
-            sections.append(
-                build_collection(
-                    key,
-                    title,
-                    description,
-                    f"entries that changed between the archive and today ({key})",
-                    rows,
-                    sources=(path_source(f"archive {copy.label}", copy.path),),
-                    as_of=current.as_of,
-                )
-            )
-        return sections
-
     def detail_sections(self, record_id: str) -> Sequence[Collection]:
         """Behind a record: a file's entries, an entry's neighbours, or an
         archive's diff."""
         current = self.snapshot()
         if record_id.startswith("history/"):
             copy = current.by_history_key().get(record_id)
-            return self._archive_sections(current, copy) if copy else []
+            return archive_sections(current, copy) if copy else []
         parts = record_id.split("/")
         if len(parts) >= 3 and parts[-1].isdigit():
             file_key = "/".join(parts[:-1])
