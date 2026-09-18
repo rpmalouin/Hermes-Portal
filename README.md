@@ -432,12 +432,41 @@ python3 -m hermes.portal                 # http://127.0.0.1:8087
 python3 -m hermes.portal --list          # registry summary, no server
 .venv/bin/hermes-portal --no-state       # serve with writing switched off
 .venv/bin/hermes-portal --state /tmp/p.json   # put the favourites file elsewhere
+.venv/bin/hermes-portal doctor           # check this machine's Hermes against the reads
 ```
 
 The default is **127.0.0.1:8087**, deliberately: not 8080 (the retired deck's port,
 which is now free and stays free) and not 9119 (Hermes' own dashboard). It binds
 localhost only, and `--port 0` picks a free port when something else already holds
 it.
+
+### When Hermes changes
+
+The portal reads a small, **declared** surface: the columns its adapters name, across six
+tables in `state.db` and `cron/executions.db`, the tables the code graph keeps, and
+`cron/jobs.json`. Hermes grows that surface additively -- `SCHEMA_SQL` is its single source
+of truth and a startup reconcile ADDs any missing column -- so a column the portal asks for
+keeps working as the tables around it grow. What breaks is the other direction, and
+`doctor` finds it before a page does:
+
+```sh
+.venv/bin/hermes-portal doctor          # ok / drift, with the likely candidate named
+.venv/bin/hermes-portal doctor --json   # the same report, for an agent to act on
+```
+
+It reports and does **not** repair. A rename is a decision about what a number *means*, so
+the fix belongs to you (or your agent) with the test suite as the net; a `0` invented by a
+guessed mapping would be worse than the honest "unavailable" the pages already show. A
+missing column is reported next to the columns that do exist, ranked by name similarity --
+`declared column is gone; closest in this table: created_at (real), last_read_at (real)` --
+and a timestamp whose *content* moved while its shape stayed the same is caught by sampling
+values through the same parser the pages use.
+
+Two limits worth knowing: the version stamps it prints are **hints, not contracts**
+(`state.db` advances `schema_version` for data migrations, so a shape change can leave it
+unmoved, and the cron store carries no stamp at all), and a green run covers the tables and
+columns above -- not file formats (skills, memory, the vault, plugin manifests, logs), and
+not value plausibility beyond whether the stamps parse. Exit code is `1` on drift.
 
 ### What it does about being a local server holding secrets
 
@@ -725,7 +754,7 @@ through its own MCP tools.
 ## Tests and checks
 
 ```sh
-python3 -m unittest discover -s tests -t .        # 441 tests, ~25s, no install needed
+python3 -m unittest discover -s tests -t .        # 472 tests, ~30s, no install needed
 uvx ruff@0.14.4 check .                           # lint, configured in pyproject.toml
 uvx ruff@0.14.4 format --check .
 

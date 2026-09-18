@@ -746,6 +746,14 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         ``0`` on success, ``1`` when the registry cannot be built.
     """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["doctor"]:
+        # A subcommand rather than a second console script: `hermes-portal doctor`
+        # is the name people reach for, and the import stays here so a long-running
+        # server does not pay for the check's module at startup.
+        from .doctor import main as doctor_main
+
+        return doctor_main(argv[1:])
     args = build_parser().parse_args(argv)
     try:
         registry = default_registry(
