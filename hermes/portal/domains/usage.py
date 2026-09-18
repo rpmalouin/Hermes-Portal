@@ -20,7 +20,16 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..model import Collection, Count, Domain, Record, Source, build_collection
+from ..model import (
+    Collection,
+    Count,
+    Domain,
+    Record,
+    Source,
+    build_collection,
+    detail_url,
+    filter_url,
+)
 from ..sources import (
     as_of,
     fmt_ago,
@@ -154,10 +163,13 @@ class UsageDomain(SnapshotDomain[None]):
             Record(
                 id=str(_get(row, "id")),
                 title=truncate(str(_get(row, "title", "(untitled)")), 70),
+                href=detail_url("sessions", str(_get(row, "id")))
+                if _get(row, "id")
+                else "",
                 subtitle=f"{_get(row, 'model')} · "
                 f"{fmt_ago(_get(row, 'started_at', None))}",
                 badges=(_money(_get(row, "estimated_cost_usd", None)),),
-                links=((f"/sessions/{_get(row, 'id')}", "Open session"),),
+                links=((detail_url("sessions", _get(row, "id")), "Open session"),),
             )
             for row in rows
         ]
@@ -296,7 +308,7 @@ class UsageDomain(SnapshotDomain[None]):
                     subtitle=f"{_number(_get(row, 'api_call_count'))} calls · "
                     f"{_number(_get(row, 'output_tokens'))} output tokens",
                     badges=(_money(_get(row, "estimated_cost_usd", None)),),
-                    href=f"/sessions?model={_get(row, 'model', '')}",
+                    href=filter_url("sessions", model=_get(row, "model", "")),
                     fields=(
                         ("model", str(_get(row, "model"))),
                         ("usage rows", _number(_get(row, "rows"))),
@@ -367,7 +379,7 @@ class UsageDomain(SnapshotDomain[None]):
                     title=str(_get(row, "provider")),
                     subtitle=f"{_number(_get(row, 'sessions'))} session(s)",
                     badges=(_money(_get(row, "estimated_cost_usd", None)),),
-                    href=f"/sessions?provider={_get(row, 'provider', '')}",
+                    href=filter_url("sessions", provider=_get(row, "provider", "")),
                     fields=(
                         ("provider", str(_get(row, "provider"))),
                         ("sessions", _number(_get(row, "sessions"))),
@@ -433,11 +445,14 @@ class UsageDomain(SnapshotDomain[None]):
                 Record(
                     id=str(_get(row, "id")),
                     title=truncate(str(_get(row, "title", "(untitled)")), 70),
+                    href=detail_url("sessions", str(_get(row, "id")))
+                    if _get(row, "id")
+                    else "",
                     subtitle=f"{_get(row, 'model')} · "
                     f"{fmt_time(_get(row, 'started_at', None))} · "
                     f"{_number(_get(row, 'message_count'))} msgs",
                     badges=(_money(_get(row, "estimated_cost_usd", None)),),
-                    links=((f"/sessions/{_get(row, 'id')}", "Open session"),),
+                    links=((detail_url("sessions", _get(row, "id")), "Open session"),),
                     fields=(
                         ("session", str(_get(row, "id"))),
                         (
@@ -514,10 +529,15 @@ class UsageDomain(SnapshotDomain[None]):
                     Record(
                         id=str(_get(row, "id")),
                         title=truncate(str(_get(row, "title", "(untitled)")), 70),
+                        href=detail_url("sessions", str(_get(row, "id")))
+                        if _get(row, "id")
+                        else "",
                         subtitle=f"{_get(row, 'model')} · "
                         f"{fmt_time(_get(row, 'started_at', None))}",
                         badges=(_money(_get(row, "estimated_cost_usd", None)),),
-                        links=((f"/sessions/{_get(row, 'id')}", "Open session"),),
+                        links=(
+                            (detail_url("sessions", _get(row, "id")), "Open session"),
+                        ),
                     )
                     for row in rows
                 ],

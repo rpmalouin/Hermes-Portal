@@ -20,7 +20,7 @@ import urllib.parse
 from collections.abc import Mapping, Sequence
 from string import Template
 
-from .model import Collection, Domain, Picker, Record
+from .model import Collection, Domain, Picker, Record, detail_url
 from .state import Favorite
 from .taxonomy import Coverage
 
@@ -504,8 +504,7 @@ def _row_target(record: Record, domain_key: str, domains: Sequence[Domain] = ())
         return ""
     if found is None:
         return ""
-    key = urllib.parse.quote(domain_key, safe="")
-    return f"/{key}/{urllib.parse.quote(str(record.id), safe='')}"
+    return detail_url(domain_key, str(record.id))
 
 
 def _record_row(

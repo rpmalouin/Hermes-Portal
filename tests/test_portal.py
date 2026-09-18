@@ -1058,7 +1058,8 @@ class TestServer(unittest.TestCase):
         which turned 13 collections across 8 domains into dead links -- cron runs,
         session messages, vault cards and tasks, log signatures, graph communities,
         plugin and memory kinds, usage top sessions, vault tags, cron incidents.  This
-        walks every domain page, extracts each internal href and fetches it.
+        walks every domain page and the detail pages they link to, extracting each
+        internal href and fetching it.
         """
         domains = (
             "",
@@ -1077,7 +1078,16 @@ class TestServer(unittest.TestCase):
             root = make_hermes_root(Path(tmp))
             with run_portal(root) as base:
                 checked = 0
-                for path in domains:
+                queue = list(domains)
+                crawled: set[str] = set()
+                # the first pass is the domain pages; whatever it queues are detail
+                # pages, and a detail page renders sections full of rows -- links too
+                # render sections full of rows, and those rows are links too
+                while queue:
+                    path = queue.pop(0)
+                    if path in crawled:
+                        continue
+                    crawled.add(path)
                     status, _ctype, page = fetch(f"{base}{path}")
                     self.assertEqual(status, 200, path)
                     hrefs = sorted(set(re.findall(r'href="(/[^"#]*)"', page)))
@@ -1089,8 +1099,10 @@ class TestServer(unittest.TestCase):
                         code, _c, _p = fetch(f"{base}{target}")
                         checked += 1
                         self.assertEqual(code, 200, f"{path} links to {target}")
+                        if len(crawled) + len(queue) < 25 and target not in crawled:
+                            queue.append(target)
                 # the fixture is small; if this collapses, the crawl stopped crawling
-                self.assertGreater(checked, 40, "suspiciously few links checked")
+                self.assertGreater(checked, 60, "suspiciously few links checked")
 
     def test_every_route_answers_and_nothing_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

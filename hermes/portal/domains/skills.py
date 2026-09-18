@@ -30,6 +30,8 @@ from ..model import (
     Record,
     Source,
     build_collection,
+    detail_url,
+    filter_url,
 )
 from ..sources import (
     as_of,
@@ -150,7 +152,7 @@ def _boxes_collection(snapshot: _Snapshot) -> Collection:
             title=name,
             subtitle=f"{count} skill(s)",
             badges=(f"{count} skills",),
-            href=f"/skills?box={name}",
+            href=filter_url("skills", box=name),
             fields=(("box", name), ("skills", str(count))),
         )
         for name, count in boxes
@@ -194,7 +196,7 @@ def _skill_records(snapshot: _Snapshot, box: str | None = None) -> list[Record]:
             badges=(card.box, card.category)
             if card.category != card.box
             else (card.box,),
-            links=((f"/skills/{card.name}", "Details"),),
+            links=((detail_url("skills", card.name), "Details"),),
             group=card.box,
             fields=(
                 ("name", card.name),
@@ -504,7 +506,7 @@ class SkillsDomain(SnapshotDomain[_Snapshot]):
                         title=card.title,
                         subtitle=truncate(card.description, 120),
                         badges=("skill", card.box),
-                        links=((f"/skills/{card.name}", "Open"),),
+                        links=((detail_url("skills", card.name), "Open"),),
                     )
                 )
             if len(hits) >= limit:

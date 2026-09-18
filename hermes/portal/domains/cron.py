@@ -21,7 +21,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..model import Collection, Count, Domain, Record, Source, build_collection
+from ..model import (
+    Collection,
+    Count,
+    Domain,
+    Record,
+    Source,
+    build_collection,
+    detail_url,
+)
 from ..sources import (
     as_of,
     cron_dir,
@@ -131,7 +139,7 @@ def _job_record(job: dict[str, Any]) -> Record:
             str(job.get("state") or "?"),
             f"last {job.get('last_status') or 'never'}",
         ),
-        links=((f"/cron/{job_id}", "Open job"),),
+        links=((detail_url("cron", job_id), "Open job"),),
         group=str(job.get("deliver") or "local"),
         fields=(
             ("id", job_id),
@@ -297,6 +305,7 @@ class CronDomain(SnapshotDomain[None]):
                 Record(
                     id=str(_get(row, "id")),
                     title=names.get(job_key, job_key),
+                    href=detail_url("cron", job_key) if job_key != "?" else "",
                     subtitle=f"{fmt_time(started)} · {_get(row, 'status')} · "
                     f"{fmt_duration(duration)}",
                     badges=(
@@ -304,7 +313,7 @@ class CronDomain(SnapshotDomain[None]):
                         str(_get(row, "source")),
                         fmt_duration(duration),
                     ),
-                    links=((f"/cron/{job_key}", "Job"),),
+                    links=((detail_url("cron", job_key), "Job"),),
                     fields=(
                         ("job", names.get(job_key, job_key)),
                         ("job id", job_key),
@@ -378,6 +387,9 @@ class CronDomain(SnapshotDomain[None]):
                 Record(
                     id=str(_get(row, "id")),
                     title=truncate(str(_get(row, "error_sig", "incident")), 80),
+                    href=detail_url("cron", str(_get(row, "job_id")))
+                    if _get(row, "job_id")
+                    else "",
                     subtitle=f"{truncate(str(_get(row, 'error', '')), 120)}",
                     badges=(
                         str(_get(row, "state")),

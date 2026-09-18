@@ -23,6 +23,7 @@ Design notes that are load-bearing:
 from __future__ import annotations
 
 import re
+import urllib.parse
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -216,6 +217,40 @@ def scrub(text: str) -> str:
     trust a file.
     """
     return _SCRUB_RE.sub("<redacted>", text)
+
+
+def detail_url(domain_key: str, record_id: str) -> str:
+    """The URL of a record's page, with the id encoded as one path segment.
+
+    Every generated link goes through here -- the renderer building a row's target,
+    and the domains pointing a run at its job, a message at its session, a card at
+    its board.  A vault note id is a path, so an unencoded one would be a link the
+    server reads as a file that does not exist.
+    """
+    key = urllib.parse.quote(domain_key, safe="")
+    return f"/{key}/{urllib.parse.quote(str(record_id), safe='')}"
+
+
+def filter_url(domain_key: str, **params: str) -> str:
+    """The URL of a filtered view: a domain page plus its picker's query.
+
+    Values are encoded here, so a model name with a slash or a folder with a space
+    cannot split the query or truncate it.  An empty value is dropped rather than
+    sent, because a picker offers no empty choice.
+    """
+    key = urllib.parse.quote(domain_key, safe="")
+    query = urllib.parse.urlencode({k: str(v) for k, v in params.items() if v != ""})
+    return f"/{key}?{query}" if query else f"/{key}"
+
+
+def search_url(query: str) -> str:
+    """The cross-domain search URL for a query.
+
+    Search is its own route with its own parameter, not a filter: ``q`` is not in
+    FILTER_KEYS, and the server strips anything that is not.  A chip pointing at
+    ``?q=`` on a domain page therefore looked like a search and did nothing.
+    """
+    return f"/search?q={urllib.parse.quote(str(query), safe='')}"
 
 
 def failed_collection(key: str, title: str, error: str, as_of: str = "") -> Collection:

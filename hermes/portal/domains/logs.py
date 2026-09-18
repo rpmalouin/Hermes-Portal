@@ -23,7 +23,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..model import Collection, Count, Domain, Record, Source, build_collection
+from ..model import (
+    Collection,
+    Count,
+    Domain,
+    Record,
+    Source,
+    build_collection,
+    detail_url,
+)
 from ..sources import (
     as_of,
     fmt_ago,
@@ -353,7 +361,9 @@ class LogsDomain(SnapshotDomain[None]):
                             subtitle=str(entry["path"].name),
                             badges=("log", entry["path"].name),
                             body=scrub(line),
-                            links=((f"/logs/{entry['path'].name}", "Open file"),),
+                            links=(
+                                (detail_url("logs", entry["path"].name), "Open file"),
+                            ),
                         )
                     )
                     break

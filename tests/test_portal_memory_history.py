@@ -229,14 +229,19 @@ class ArchiveDiscoveryTestCase(unittest.TestCase):
         self.assertEqual(sections["added"].count.value, 1)
 
     def test_archived_entries_link_to_the_current_file(self) -> None:
-        """An archived entry has no page of its own, so its row must not 404."""
+        """An archived entry has no page of its own, so its row must not 404.
+
+        The link points at the live file, and the id is encoded because a memory id is
+        ``profile/kind``: unencoded, the slash reads as a path separator and the page
+        404s, which is what this asserted before the encoding was fixed.
+        """
         sections = self.registry.safe_sections(
             self.domain, "history/hermes-backup-2026-08-25-000000-abcd/default/memory"
         )
         for section in sections:
             for record in section.records:
                 if record.href:
-                    self.assertEqual(record.href, "/memory/default/memory")
+                    self.assertEqual(record.href, "/memory/default%2Fmemory")
 
     def test_the_current_file_links_to_its_past(self) -> None:
         sections = {

@@ -26,7 +26,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...core import skill_trees
-from ..model import Collection, Count, Domain, Record, Source, build_collection
+from ..model import (
+    Collection,
+    Count,
+    Domain,
+    Record,
+    Source,
+    build_collection,
+    detail_url,
+    filter_url,
+)
 from ..sources import (
     as_of,
     fmt_ago,
@@ -347,7 +356,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                         f"{len(note.backlinks)} backlinks",
                     )
                     + (("has open tasks",) if note.open_tasks else ()),
-                    links=((f"/vault/{note.rel}", "Open note"),),
+                    links=((detail_url("vault", note.rel), "Open note"),),
                 )
                 for note in sorted(notes, key=lambda n: -n.mtime)
             ],
@@ -387,6 +396,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
             [
                 Record(
                     id=f"card-{index}",
+                    href=detail_url("vault", card.note),
                     title=card.text,
                     subtitle=f"{card.column} · {card.status}",
                     badges=(card.column, card.status)
@@ -395,7 +405,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                         if card.checkbox_open and card.is_done
                         else ()
                     ),
-                    links=((f"/vault/{card.note}", "Open board"),),
+                    links=((detail_url("vault", card.note), "Open board"),),
                     fields=(
                         ("column", card.column),
                         ("status", card.status),
@@ -466,6 +476,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
             [
                 Record(
                     id=f"task-{index}",
+                    href=detail_url("vault", note_rel),
                     title=text,
                     subtitle=note_rel if not detail else f"{note_rel} · {detail}",
                     badges=(badge, note_rel.split("/")[0] or "(root)"),
@@ -500,7 +511,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                     title=name,
                     subtitle=f"{count} note(s)",
                     badges=(f"{count} notes",),
-                    href=f"/vault?folder={name}",
+                    href=filter_url("vault", folder=name),
                 )
                 for name, count in folders
             ],
@@ -524,7 +535,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                     title=note.title,
                     subtitle=note.rel,
                     badges=(f"{len(note.links)} out", f"{len(note.backlinks)} in"),
-                    links=((f"/vault/{note.rel}", "Open note"),),
+                    links=((detail_url("vault", note.rel), "Open note"),),
                 )
                 for note in ordered
                 if note.links
@@ -601,7 +612,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                         f"{len(note.links)} links",
                         f"{len(note.backlinks)} in",
                     ),
-                    links=((f"/vault/{note.rel}", "Open note"),),
+                    links=((detail_url("vault", note.rel), "Open note"),),
                 )
                 for note in notes
             ],
@@ -663,7 +674,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                     if destination
                     else "not resolved",
                     badges=("resolved",) if destination else ("broken link",),
-                    links=((f"/vault/{destination}", "Open note"),)
+                    links=((detail_url("vault", destination), "Open note"),)
                     if destination
                     else (),
                 )
@@ -674,7 +685,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                 title=current.notes[source].title,
                 subtitle=source,
                 badges=("links here",),
-                links=((f"/vault/{source}", "Open note"),),
+                links=((detail_url("vault", source), "Open note"),),
             )
             for source in note.backlinks
         ]
@@ -724,7 +735,7 @@ class VaultDomain(SnapshotDomain[VaultIndex]):
                         title=note.title,
                         subtitle=snippet(excerpt or note.rel, 160),
                         badges=(where, note.folder.split("/")[0] or "(root)"),
-                        links=((f"/vault/{note.rel}", "Open note"),),
+                        links=((detail_url("vault", note.rel), "Open note"),),
                     )
                 )
             if len(hits) >= limit:

@@ -22,7 +22,16 @@ from pathlib import Path
 from typing import Any
 
 from .. import fts
-from ..model import Collection, Count, Domain, Record, Source, build_collection
+from ..model import (
+    Collection,
+    Count,
+    Domain,
+    Record,
+    Source,
+    build_collection,
+    detail_url,
+    search_url,
+)
 from ..sources import (
     as_of,
     fmt_ago,
@@ -161,7 +170,7 @@ def _session_record(row: Any) -> Record:
             f"{_number(tools)} tools",
             _money(cost),
         ),
-        links=((f"/sessions/{session_id}", "Open session"),),
+        links=((detail_url("sessions", session_id), "Open session"),),
         group=str(_get(row, "billing_provider", "?")),
         fields=(
             ("id", session_id),
@@ -428,6 +437,7 @@ class SessionsDomain(SnapshotDomain[None]):
                     id=f"message-{row.get('id')}",
                     title=f"{role} message" + (f" · {tool}" if tool else ""),
                     subtitle=row.get("excerpt") or "(empty)",
+                    href=detail_url("sessions", session_id) if session_id else "",
                     badges=(role, "tool call" if tool else "text"),
                     fields=(
                         ("session", session_id),
@@ -435,7 +445,7 @@ class SessionsDomain(SnapshotDomain[None]):
                         ("tool", tool or "—"),
                         ("at", fmt_time(row.get("timestamp"))),
                     ),
-                    links=((f"/sessions/{session_id}", "Open session"),)
+                    links=((detail_url("sessions", session_id), "Open session"),)
                     if session_id
                     else (),
                 )
@@ -509,7 +519,7 @@ class SessionsDomain(SnapshotDomain[None]):
             subtitle=record.subtitle,
             badges=record.badges,
             fields=record.fields,
-            links=((f"/sessions?q={record.id}", "Search this id"),),
+            links=((search_url(record.id), "Search this id"),),
             body="\n".join(n for n in notes if n),
         )
 
@@ -638,7 +648,7 @@ class SessionsDomain(SnapshotDomain[None]):
                     )
                     + (("tool call",) if tool else ()),
                     fields=(("session", session_id), ("role", role)),
-                    links=((f"/sessions/{session_id}", "Open session"),)
+                    links=((detail_url("sessions", session_id), "Open session"),)
                     if session_id
                     else (),
                 )
@@ -661,7 +671,7 @@ class SessionsDomain(SnapshotDomain[None]):
                         title=record.title,
                         subtitle=record.subtitle,
                         badges=("session", "title match"),
-                        links=((f"/sessions/{record.id}", "Open session"),),
+                        links=((detail_url("sessions", record.id), "Open session"),),
                     )
                 )
         _close(con)

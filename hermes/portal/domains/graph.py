@@ -23,7 +23,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..model import Collection, Count, Domain, Record, Source, build_collection
+from ..model import (
+    Collection,
+    Count,
+    Domain,
+    Record,
+    Source,
+    build_collection,
+    detail_url,
+)
 from ..sources import (
     Cache,
     age_seconds,
@@ -337,7 +345,9 @@ class GraphDomain(SnapshotDomain[None]):
                         if _get(row, "security_relevant")
                         else "not flagged",
                     ),
-                    links=((f"/graph/{_get(row, 'qualified_name')}", "Open node"),),
+                    links=(
+                        (detail_url("graph", _get(row, "qualified_name")), "Open node"),
+                    ),
                     fields=(
                         ("qualified name", str(_get(row, "qualified_name"))),
                         ("risk score", str(_get(row, "risk_score"))),
@@ -376,7 +386,9 @@ class GraphDomain(SnapshotDomain[None]):
                     title=truncate(str(_get(row, "qualified_name")), 90),
                     subtitle=f"risk {_get(row, 'risk_score')}",
                     badges=(f"{_get(row, 'caller_count')} callers",),
-                    links=((f"/graph/{_get(row, 'qualified_name')}", "Open node"),),
+                    links=(
+                        (detail_url("graph", _get(row, "qualified_name")), "Open node"),
+                    ),
                     fields=(
                         ("qualified name", str(_get(row, "qualified_name"))),
                         ("callers", str(_get(row, "caller_count"))),
@@ -643,7 +655,9 @@ class GraphDomain(SnapshotDomain[None]):
                 title=truncate(str(_get(row, "qualified_name")), 90),
                 subtitle=f"{_get(row, 'kind')} · {_get(row, 'file_path')}",
                 badges=("node", str(_get(row, "language"))),
-                links=((f"/graph/{_get(row, 'qualified_name')}", "Open node"),),
+                links=(
+                    (detail_url("graph", _get(row, "qualified_name")), "Open node"),
+                ),
             )
             for row in rows
         ]

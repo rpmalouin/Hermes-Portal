@@ -45,6 +45,7 @@ from ..model import (
     Record,
     Source,
     build_collection,
+    detail_url,
 )
 from ..sources import (
     as_of,
@@ -492,7 +493,12 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
                         ("reworded since", str(len(delta["changed"]))),
                         ("member", copy.member or "—"),
                     ),
-                    links=((f"/memory/{copy.profile}/{copy.kind}", "Current file"),)
+                    links=(
+                        (
+                            detail_url("memory", f"{copy.profile}/{copy.kind}"),
+                            "Current file",
+                        ),
+                    )
                     if live is not None
                     else (),
                 )
@@ -758,7 +764,9 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
                 ("reworded since", str(len(delta["changed"]))),
                 ("removed since", str(len(delta["removed"]))),
             ),
-            links=((f"/memory/{copy.profile}/{copy.kind}", "Current file"),)
+            links=(
+                (detail_url("memory", f"{copy.profile}/{copy.kind}"), "Current file"),
+            )
             if live is not None
             else (),
             body=truncate(copy.text, BODY_CAP) or "(nothing was archived)",
@@ -829,7 +837,7 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
                 ("same file in profiles", str(len(other_profiles) + 1)),
             ),
             links=(
-                (f"/memory/{file_key}", f"Open {KIND_LABELS[entry.kind]}"),
+                (detail_url("memory", file_key), f"Open {KIND_LABELS[entry.kind]}"),
                 ("/memory", "All memory"),
             ),
             body=truncate(entry.text, BODY_CAP),
@@ -841,7 +849,9 @@ class MemoryDomain(SnapshotDomain["_Snapshot"]):
         """What the copy held, and the three ways entries have moved since."""
         live = current.file_for(copy.profile, copy.kind)
         live_link = (
-            f"/memory/{copy.profile}/{copy.kind}" if live is not None else copy.key
+            detail_url("memory", f"{copy.profile}/{copy.kind}")
+            if live is not None
+            else copy.key
         )
         # Collection is frozen, so the note has to be decided before it is built
         then_notes = (
