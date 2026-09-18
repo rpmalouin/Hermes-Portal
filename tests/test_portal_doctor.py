@@ -15,12 +15,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes.portal import doctor, server  # noqa: E402
+from hermes.portal.domains import logs as logs_domain  # noqa: E402
 from tools.schema_snapshot import build_root, make_graph_db  # noqa: E402
 
 
@@ -34,6 +36,14 @@ class DoctorTestCase(unittest.TestCase):
         # this machine, which would make the tests non-hermetic and slow).
         self.vault = Path(self._tmp.name) / "vault"
         self.vault.mkdir()
+        # The logs adapter also reads ~/Library/Logs, which is a real directory on this
+        # host and absent on the CI runners: a check that read it would mean something
+        # different in each place.  The domain tests patch it the same way.
+        self._library = mock.patch.object(
+            logs_domain, "LIBRARY_LOGS", Path(self._tmp.name) / "no-library-logs"
+        )
+        self._library.start()
+        self.addCleanup(self._library.stop)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -203,7 +213,65 @@ class TestFileSurfaces(DoctorTestCase):
     def test_the_empty_vault_is_reported_rather_than_assumed(self) -> None:
         findings = {f.subject: f for f in self.check().findings}
         self.assertIn("vault.notes", findings)
-        self.assertIn("0 markdown note(s)", findings["vault.notes"].detail)
+        self.assertIn(
+            "0 note(s) the vault adapter would index", findings["vault.notes"].detail
+        )
+
+    def test_the_vault_source_count_is_the_set_the_page_serves(self) -> None:
+        """The two numbers must describe one set; only the adapter knows the edges."""
+        (self.vault / "A.md").write_text("# A\n", encoding="utf-8")
+        (self.vault / "B.md").write_text("# B\n", encoding="utf-8")
+        detail = next(
+            f.detail for f in self.check().findings if f.subject == "vault.notes"
+        )
+        self.assertIn("2 note(s) the vault adapter would index", detail)
+        self.assertIn("the page reads 2", detail)
+
+    def test_a_note_behind_a_link_out_of_the_tree_is_not_counted(self) -> None:
+        """This is the 860-against-809 the old walk produced: ``os.walk`` follows a
+        directory symlink out of the vault, and the vault refuses it."""
+        outside = Path(self._tmp.name) / "outside"
+        outside.mkdir()
+        (outside / "Away.md").write_text("# Away\n", encoding="utf-8")
+        (self.vault / "Here.md").write_text("# Here\n", encoding="utf-8")
+        (self.vault / "Linked").symlink_to(outside)
+        detail = next(
+            f.detail for f in self.check().findings if f.subject == "vault.notes"
+        )
+        self.assertIn("1 note(s) the vault adapter would index", detail)
+        self.assertIn("the page reads 1", detail)
+
+    def test_a_count_that_raises_is_reported_rather_than_raised(self) -> None:
+        """A diagnostic that dies is worse than one that says what it could not look at.
+
+        ``vault.build_index`` stats each file after the walk, so a count can raise on a
+        tree that moves under it; that must be a finding, not an exception.
+        """
+
+        def boom(_root: Path, _vault: Path) -> int:
+            raise OSError("the tree went away")
+
+        surface = doctor.FileSurface("vault", "notes", "note(s)", boom, False)
+        findings = doctor._check_files(self.root, self.vault, surfaces=(surface,))
+        self.assertEqual(findings[0].severity, "warn")
+        self.assertIn("could not count the sources", findings[0].detail)
+
+    def test_the_log_source_count_is_the_set_the_adapter_reads(self) -> None:
+        """24 files where the adapter reads 35: it also reads ~/Library/Logs, so a walk
+        of ``<root>/logs`` alone measures a set the reader never uses."""
+        logs = self.root / "logs"
+        logs.mkdir(exist_ok=True)
+        (logs / "agent.log").write_text("nothing to see\n", encoding="utf-8")
+        library = Path(self._tmp.name) / "library-logs"
+        library.mkdir()
+        (library / "hermes-ui.log").write_text("nothing to see\n", encoding="utf-8")
+        with mock.patch.object(logs_domain, "LIBRARY_LOGS", library):
+            detail = next(
+                f.detail
+                for f in self.check().findings
+                if f.subject == "logs.signatures"
+            )
+        self.assertIn("2 log file(s) the logs adapter would read", detail)
 
     def test_link_syntax_the_page_reads_nothing_from_is_drift(self) -> None:
         """The count agrees and the link view is dark: the shape moved, not the files.

@@ -45,6 +45,7 @@ from typing import Any
 
 from .domains import cron as cron_domain
 from .domains import graph as graph_domain
+from .domains import logs as logs_domain
 from .domains import sessions as sessions_domain
 from .domains import usage as usage_domain
 from .domains import vault as vault_domain
@@ -146,6 +147,14 @@ class FileSurface:
     detector beside the adapter's own ``ERRORISH``, which is the drifting copy this
     module refuses everywhere else, and "no error line in the tail" is exactly what a
     healthy machine looks like.
+
+    The ``sources`` label on the vault and logs surfaces names the *adapter* rather than
+    a directory, because counting the same tree a second way is how this check went
+    wrong: a parallel walk counted 860 vault notes where the adapter serves 809 (an
+    ``os.walk`` follows a directory symlink out of the tree, which the vault refuses)
+    and 24 log files where the adapter reads 35 (it also reads ``~/Library/Logs``).
+    Both numbers described a set the page never reads -- the same fault as a label wider
+    than its set, one layer down.
     """
 
     domain: str
@@ -242,8 +251,8 @@ FILE_SURFACES = (
     FileSurface(
         "vault",
         "notes",
-        "markdown note(s) under the vault root",
-        lambda _root, vault: _walk_sources([vault], lambda p: p.suffix == ".md"),
+        "note(s) the vault adapter would index",
+        lambda _root, vault: len(vault_domain.build_index(vault).notes),
         False,
         shape=FileShape(
             "notes whose text contains '[['",
@@ -254,10 +263,8 @@ FILE_SURFACES = (
     FileSurface(
         "logs",
         "signatures",
-        "log file(s) in scope",
-        lambda root, _vault: _walk_sources(
-            [root / "logs"], lambda p: p.suffix == ".log"
-        ),
+        "log file(s) the logs adapter would read",
+        lambda root, _vault: len(logs_domain.log_files(root)),
         False,
     ),
 )
@@ -720,7 +727,18 @@ def _check_files(
             )
             continue
         collection = served.get(surface.collection)
-        sources = surface.count(root, vault)
+        try:
+            sources = surface.count(root, vault)
+        except Exception as exc:  # noqa: BLE001 - a count that raises is the finding
+            findings.append(
+                Finding(
+                    "warn",
+                    surface.domain,
+                    subject,
+                    f"could not count the sources: {type(exc).__name__}: {exc}",
+                )
+            )
+            continue
         if collection is None:
             findings.append(
                 Finding(
