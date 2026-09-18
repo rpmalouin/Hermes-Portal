@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
@@ -54,6 +55,10 @@ DEFAULT_PORT = 8087
 FILTER_KEYS = ("box", "folder", "kind", "model", "provider", "profile")
 MAX_BODY_BYTES = 8192
 JSON_TYPES = ("application/json", "")
+
+#: Refreshes closer together than this are refused.  The effect is a re-read of every
+#: source -- cheap, but not free, and no page needs it twice in a moment.
+REFRESH_FLOOR_SECONDS = 2.0
 
 #: Names that mean "this machine".  Binding to one of these does *not* mean only this
 #: machine can reach the server: any name that resolves to 127.0.0.1 reaches it, which
@@ -225,6 +230,8 @@ class PortalHandler(BaseHTTPRequestHandler):
     #: Names this server answers to; empty means no check (bound where the operator
     #: asked, so exposure was their call).  Set by :func:`serve`.
     hosts: tuple[str, ...] = ()
+    #: When the last refresh was accepted, so two in a row can be refused politely.
+    last_refresh: float = 0.0
     #: Quiet on loopback, where every request is the user's own; requests are logged
     #: when the portal was bound to a named interface, because then they are not.
     quiet: bool = True
@@ -428,6 +435,9 @@ class PortalHandler(BaseHTTPRequestHandler):
         key = segments[0] if segments else ""
         if key.endswith(".json"):
             key = key[: -len(".json")]
+        if key == "refresh":
+            self._refresh()
+            return
         if key != "favorites":
             self._send_json(
                 {"ok": False, "error": f"no POST route for {parsed.path!r}"}, 404
@@ -521,6 +531,44 @@ class PortalHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _refresh(self) -> None:
+        """Drop every domain's cached snapshot: the explicit way to re-read.
+
+        The cache is per process on purpose -- a page that silently re-read a 3 MB vault
+        mid-request would be a surprise -- so the way to make the portal fresh is to say
+        so, which is what the header's refresh button does.  Nothing is written:
+        the only file this server ever touches is the favourites document.
+        """
+        registry = self.registry
+        if registry is None:
+            self._send_json(
+                {"ok": False, "error": "portal registry not configured"}, 500
+            )
+            return
+
+        now = time.monotonic()
+        if now - PortalHandler.last_refresh < REFRESH_FLOOR_SECONDS:
+            self._send_json(
+                {"ok": False, "error": "refreshed a moment ago; give it a second"}, 429
+            )
+            return
+
+        forgotten: list[str] = []
+        for domain in registry.all():
+            if domain.forget is None:
+                continue
+            domain.forget()
+            forgotten.append(domain.key)
+        PortalHandler.last_refresh = now
+        self._send_json(
+            {
+                "ok": True,
+                "forgotten": forgotten,
+                "as_of": as_of(),
+                "note": "nothing written; the next page reads every source again",
+            }
+        )
+
     def _not_found(self, what: str) -> None:
         """Send a 404, rendered like every other page."""
         registry = self.registry
@@ -545,9 +593,13 @@ class PortalHandler(BaseHTTPRequestHandler):
 
 def write_policy(state: PortalState | None) -> str:
     """One line saying exactly what a request may write, for the startup banner."""
+    refresh = "POST /refresh.json writes nothing; it re-reads every source."
     if state is None or state.path is None:
-        return "Read-only: writing is switched off (--no-state)."
-    return f"Read-only except favourites: POST /favorites.json writes {state.path}."
+        return f"Read-only: writing is switched off (--no-state). {refresh}"
+    return (
+        f"Read-only except favourites: POST /favorites.json writes {state.path}. "
+        f"{refresh}"
+    )
 
 
 def serve(

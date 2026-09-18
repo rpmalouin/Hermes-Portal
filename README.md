@@ -135,10 +135,17 @@ anything you can see, you can also fetch:
 | `/<domain>/<id>` | one record, plus the collections behind it (a session's messages, a job's runs) |
 | `/search?q=…` | cross-domain search; messages go through the FTS indexes |
 | `/favorites` | the records you starred — the one thing the portal writes |
+| `POST /refresh.json` | re-read every source; writes nothing (the ↻ button in the header) |
 | `/<domain>.json`, `/index.json`, `/favorites.json`, `/search.json` | the same data, for scripting |
 
 Filters live in the URL and combine: `?box=creative` (or a category path,
 `?box=mlops/evaluation`), `?folder=Homelab`, `?kind=platform`, `?model=…`, `?profile=…`.
+
+**Freshness.** Sessions, usage, cron, health, logs and the code graph are read when you load
+the page. The vault, skills, memory and plugins are indexed **once per process** — they are the
+expensive ones, and a page that silently re-read a 3 MB vault mid-request would be a surprise —
+so the header carries a **↻ button** that drops those snapshots and re-reads. Every collection
+stamps the `as of` time it was read (UTC), so a page always tells you how old it is.
 
 Useful flags: `--vault` (which Obsidian vault; or set `$HERMES_VAULT`), `--graph-db` (which code graph),
 `--profile` / `--all-profiles` (whose skills), `--hermes-home`, `--port`, `--host` (read
@@ -416,7 +423,8 @@ A second web view, and the start of the system around everything Hermes keeps.
 Every **source** is opened read-only -- SQLite with `mode=ro` plus `query_only`, HTTP
 probes as GETs, files read from the end -- and there is exactly **one** write in the
 project: starring a record, which updates the portal's own state document and nothing
-else. Every other POST is refused by name.
+else. The one other POST that does anything is a refresh, which re-reads the sources and writes
+nothing at all. Every other POST is refused by name.
 
 ```sh
 python3 -m hermes.portal                 # http://127.0.0.1:8087
@@ -602,6 +610,9 @@ memberships, its risk row and its community.
 
 The mockup's UI on top of real data, with one new idea: a record can be **starred**.
 
+* **A refresh writes nothing.** `POST /refresh.json` drops the per-process snapshots so the next
+  page re-reads every source; it is the header's ↻ button and the only way a page shows you an
+  edit the portal had already cached.
 * **Favourites are the portal's only write.** `POST /favorites.json` takes
   `{domain, id, action}` and updates `<hermes root>/portal/state.json` (override with
   `--state`, disable with `--no-state`). The request is validated in a fixed order --

@@ -270,7 +270,7 @@ def _skills_collection(snapshot: _Snapshot, box: str | None = None) -> Collectio
     )
 
 
-class SkillsDomain(SnapshotDomain[None]):
+class SkillsDomain(SnapshotDomain[_Snapshot]):
     """Every skill document the running agent can invoke.
 
     A class rather than a factory of closures, so every helper below can be called by
@@ -297,13 +297,27 @@ class SkillsDomain(SnapshotDomain[None]):
         super().__init__(hermes_home)
         self.profile = profile
         self.all_profiles = all_profiles
-        # the factory built this eagerly; the name is ``index`` because ``snapshot`` is
-        # the base class's method for the same thing
-        self.index = _snapshot(
+
+    def read(self) -> _Snapshot:
+        """Read the skill tree once; the base class caches it for the process.
+
+        It used to be built eagerly in ``__init__``, which is why the refresh could
+        not reach it.  Reading happens here, so the base class owns it.
+        """
+        return _snapshot(
             hermes_home=self.hermes_home,
             profile=self.profile,
             all_profiles=self.all_profiles,
         )
+
+    @property
+    def index(self) -> _Snapshot:
+        """The cached tree: this domain's name for the base class's snapshot.
+
+        A property rather than a field, so the helpers below keep reading ``self.index``
+        while the tree stays read-once and droppable.
+        """
+        return self.snapshot()
 
     def overview(self) -> Collection:
         """Headline collection: the skill count, and the counts that differ from it."""

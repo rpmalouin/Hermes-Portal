@@ -193,6 +193,11 @@ class Domain:
     detail: Callable[[str], Record | None]
     search: Callable[[str, int], Sequence[Record]]
     detail_sections: Callable[[str], Sequence[Collection]] = lambda _record_id: ()
+    #: Drop whatever this domain caches, so the next read goes back to the sources.  A
+    #: page never calls it -- re-reading a 3 MB vault mid-request would be a surprise --
+    #: so it is wired to the explicit refresh (``POST /refresh.json``) and nothing else.
+    #: ``None`` means the domain has no cache to drop.
+    forget: Callable[[], None] | None = None
 
 
 #: Credential-shaped text that must never reach a page.  Logs, message bodies, job

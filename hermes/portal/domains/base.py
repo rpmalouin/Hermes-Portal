@@ -127,6 +127,7 @@ class SnapshotDomain(Generic[Snapshot]):
             detail=self.detail,
             search=self.search,
             detail_sections=self.detail_sections,
+            forget=self.forget,
         )
 
     def __repr__(self) -> str:

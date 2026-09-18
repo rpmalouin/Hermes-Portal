@@ -423,6 +423,9 @@ def _nav(domains: Sequence[Domain], current: str = "", query: str = "") -> str:
         f' placeholder="{placeholder}">\n'
         '    <button type="submit">Search</button>\n'
         "  </form>\n"
+        '  <button class="ghost" type="button" id="refresh" '
+        'title="Re-read every source (the cached ones are read once per run)">'
+        "\u21bb</button>\n"
         '  <button class="ghost" type="button" id="palette-open" '
         'title="Search (Ctrl+K)">\u2318K</button>\n'
         '  <button class="ghost" type="button" id="theme-toggle" '
@@ -659,7 +662,6 @@ def render_tiles(cov: Coverage) -> str:
         stale = (
             f'<div class="meta">mapping names {len(row.missing)} box(es) that '
             f"no longer exist: {html.escape(', '.join(row.missing))}</div>"
-            f"exist: {html.escape(', '.join(row.missing))}</div>"
             if row.missing
             else ""
         )
@@ -1074,6 +1076,26 @@ APP_JS = r"""
 
     // -- command palette --------------------------------------------------
     var overlay = document.getElementById("palette");
+    // Refresh: drop the cached snapshots, then reload so the pages show what
+    // was just read.  It writes nothing -- a favourite is still the only write.
+    var refresh = document.getElementById("refresh");
+    if (refresh) {
+        refresh.addEventListener("click", function () {
+            refresh.disabled = true;
+            fetch("/refresh.json", { method: "POST" })
+                .then(function (response) { return response.json(); })
+                .then(function (data) {
+                    if (!data.ok) { throw new Error(data.error || "refused"); }
+                    say("Re-read " + data.forgotten.length + " domains; reloading");
+                    window.setTimeout(function () { window.location.reload(); }, 400);
+                })
+                .catch(function (error) {
+                    refresh.disabled = false;
+                    say("Refresh failed: " + error.message);
+                });
+        });
+    }
+
     var opener = document.getElementById("palette-open");
     if (!overlay) { return; }
     var field = overlay.querySelector("input");

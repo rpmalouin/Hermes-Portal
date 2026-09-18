@@ -1411,3 +1411,115 @@ class SourceSafetyTestCase(unittest.TestCase):
             (elsewhere / "note.md").write_text("x", encoding="utf-8")
             (tree / "shortcut").symlink_to(elsewhere, target_is_directory=True)
             self.assertFalse(sources.inside_tree(tree / "shortcut" / "note.md", tree))
+
+
+def make_skill(home: Path, name: str, box: str = "demo") -> Path:
+    """Write one minimal skill into *home*'s tree."""
+    skill = home / "skills" / box / name
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: demo {name}\n---\n\n# {name}\n",
+        encoding="utf-8",
+    )
+    return skill
+
+
+class RefreshTestCase(unittest.TestCase):
+    """The refresh button's other half: POST /refresh.json drops the cached snapshots.
+
+    Vault, skills, memory and plugins read their sources once per process, so no
+    page can show an edit without this -- and it is the only thing that drops them.
+    """
+
+    def setUp(self) -> None:
+        # the rate-limit clock is class-level, so one test's refresh would refuse the
+        # next test's; reset it rather than depending on test order
+        server.PortalHandler.last_refresh = 0.0
+
+    def test_a_snapshot_is_read_once_and_only_forget_drops_it(self) -> None:
+        """The mechanism, without a server in the way."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            make_skill(home, "alpha")
+            domain = skills_domain.SkillsDomain(hermes_home=home)
+            self.assertEqual(domain.overview().count.value, 1)
+
+            make_skill(home, "beta")  # an edit after the tree was first read
+            self.assertEqual(domain.overview().count.value, 1)  # still the cached tree
+
+            domain.forget()  # what the button does on the server
+            self.assertEqual(domain.overview().count.value, 2)
+
+    def test_the_route_forgets_every_domain(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            request = urllib.request.Request(
+                f"{base}/refresh.json", data=b"", method="POST"
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.load(response)
+                self.assertEqual(response.status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["forgotten"]), 10)
+        self.assertIn("vault", payload["forgotten"])
+        self.assertIn("nothing written", payload["note"])
+
+    def test_two_refreshes_in_a_moment_are_refused(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            first = urllib.request.Request(
+                f"{base}/refresh.json", data=b"", method="POST"
+            )
+            urllib.request.urlopen(first, timeout=10).read()
+            second = urllib.request.Request(
+                f"{base}/refresh.json", data=b"", method="POST"
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(second, timeout=10)
+            self.assertEqual(caught.exception.code, 429)
+
+    def test_the_route_obeys_the_host_check_like_everything_else(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            hostile = urllib.request.Request(
+                f"{base}/refresh.json",
+                data=b"",
+                method="POST",
+                headers={"Host": "evil.example"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(hostile, timeout=10)
+            self.assertEqual(caught.exception.code, 421)
+
+    def test_the_other_post_routes_are_still_refused(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            request = urllib.request.Request(
+                f"{base}/skills.json", data=b"", method="POST"
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=10)
+            self.assertEqual(caught.exception.code, 404)
+
+    def test_the_header_carries_the_button_and_its_script(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            page = urllib.request.urlopen(f"{base}/", timeout=10).read().decode()
+            # the script is a separate route, not inline in the page
+            script = (
+                urllib.request.urlopen(f"{base}/app.js", timeout=10).read().decode()
+            )
+        self.assertIn('id="refresh"', page)
+        self.assertIn("Re-read every source", page)
+        self.assertIn("/refresh.json", script)
+        self.assertIn('getElementById("refresh")', script)
