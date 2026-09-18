@@ -15,7 +15,7 @@ it](#how-to-use-this) is the one after that. The layout:
 ![The Hermes Portal index page, a demo instance: the eight skill tiles across the top, then a card per domain](/docs/screenshot.png)
 
 *The page above is a demo instance -- a fixture Hermes home, not this machine, and the
-`demo-*` agent names are fixtures too.*
+`demo-*` agent names are fixtures too. `tools/demo_shot/` builds and captures it.*
 
 ```
 hermes/

@@ -57,6 +57,10 @@ select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RET", "ARG", "PTH"]
 # The base domain class declares the portal's four-callable contract and implements the
 # permissive defaults; a subclass is what uses the parameters.
 "hermes/portal/domains/base.py" = ["ARG002"]
+# The demo builder is a fixture, not a library: its tables of synthetic nodes, edges,
+# sessions, cron runs and log lines are data laid out as data, and folding them to 88
+# columns costs more in legibility than the limit buys.
+"tools/demo_shot/*.py" = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
