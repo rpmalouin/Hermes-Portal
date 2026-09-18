@@ -577,6 +577,7 @@ class TestLogsDomain(BaseP1):
 # domain does not mean editing four literal lists -- and a test that fails when data
 # expected to change is updated is not a test worth keeping.
 EXPECTED_DOMAINS = (
+    "agents",
     "cron",
     "graph",
     "health",

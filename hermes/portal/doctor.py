@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .domains import agents as agents_domain
 from .domains import cron as cron_domain
 from .domains import graph as graph_domain
 from .domains import logs as logs_domain
@@ -428,6 +429,31 @@ def contract(home: Path | None = None) -> tuple[TableNeed, ...]:
     needs.extend(
         TableNeed("graph.db", graph_db, table, (), required=False)
         for table in GRAPH_TABLES
+    )
+    # Every agent's own store, not only the root's: the agents adapter reads one store
+    # per profile, and a green run that never looked at them would describe a surface
+    # the pages no longer have.  Warnings rather than drift: that adapter asks for the
+    # columns it knows -- a profile's store losing one costs a field, not the page.
+    needs.extend(
+        need
+        for label, base, is_root in agents_domain.agent_homes(home)
+        if not is_root
+        for need in (
+            TableNeed(
+                f"{label}/state.db",
+                base / "state.db",
+                "sessions",
+                agents_domain.AGENT_COLUMNS,
+                required=False,
+            ),
+            TableNeed(
+                f"{label}/state.db",
+                base / "state.db",
+                "gateway_heartbeats",
+                agents_domain.HEARTBEAT_COLUMNS,
+                required=False,
+            ),
+        )
     )
     return tuple(needs)
 

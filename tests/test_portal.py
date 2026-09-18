@@ -1793,9 +1793,11 @@ class RefreshTestCase(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=10) as response:
                 payload = json.load(response)
                 self.assertEqual(response.status, 200)
+            with urllib.request.urlopen(f"{base}/index.json", timeout=10) as response:
+                domains = [entry["key"] for entry in json.load(response)["domains"]]
         self.assertTrue(payload["ok"])
-        self.assertEqual(len(payload["forgotten"]), 10)
-        self.assertIn("vault", payload["forgotten"])
+        # however many planes the index lists, the button forgot every one of them
+        self.assertEqual(sorted(payload["forgotten"]), sorted(domains))
         self.assertIn("nothing written", payload["note"])
 
     def test_two_refreshes_in_a_moment_are_refused(self) -> None:

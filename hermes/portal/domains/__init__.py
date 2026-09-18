@@ -17,6 +17,7 @@ from pathlib import Path
 from ..model import DomainRegistry
 from ..sources import hermes_root
 from . import (
+    agents,
     cron,
     graph,
     health,
@@ -39,7 +40,8 @@ def default_registry(
     vault_root: Path | None = None,
     graph_db: Path | None = None,
 ) -> DomainRegistry:
-    """Build the registry: skills, sessions, cron, usage, health, logs, vault and graph.
+    """Build the registry: skills, sessions, cron, usage, health, logs, vault, graph,
+    memory, plugins and agents.
 
     P0 was skills/sessions/cron; P1 adds usage (cost rollups), health (services,
     heartbeats, ports, tickers, storage) and logs (tails and error signatures).
@@ -78,4 +80,5 @@ def default_registry(
     registry.register(graph.build_domain(hermes_home=root, graph_db=graph_db))
     registry.register(memory.build_domain(hermes_home=hermes_home))
     registry.register(plugins.build_domain(hermes_home=hermes_home))
+    registry.register(agents.build_domain(hermes_home=root))
     return registry

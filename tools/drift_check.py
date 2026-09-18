@@ -65,6 +65,7 @@ PAGES = (
     "/usage",
     "/logs",
     "/health",
+    "/agents",
     "/search?q=probe",
 )
 JSON_ROUTES = (
@@ -73,6 +74,7 @@ JSON_ROUTES = (
     "/cron.json",
     "/usage.json",
     "/health.json",
+    "/agents.json",
 )
 
 # A read that did not happen says so; anything else is a number the page stands behind.
@@ -173,6 +175,7 @@ SCENARIOS: tuple[Scenario, ...] = (
             Expect("usage", "by-day", ("readable",)),
             Expect("cron", "jobs", ("readable",)),
             Expect("health", "services", ("readable",), "launchctl, not a store"),
+            Expect("agents", "stores", ("readable",), "its own store is read"),
         ),
     ),
     Scenario(
@@ -227,6 +230,12 @@ SCENARIOS: tuple[Scenario, ...] = (
             ),
             Expect("health", "services", ("readable",), "silenced only what reads it"),
             Expect("health", "ports", ("readable",)),
+            Expect(
+                "agents",
+                "stores",
+                ("mentions:not read",),
+                "an agent with an unreadable store says so rather than reading 0",
+            ),
         ),
     ),
 )
