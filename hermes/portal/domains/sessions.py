@@ -265,11 +265,18 @@ class SessionsDomain(SnapshotDomain[None]):
         notes = []
         if error:
             notes.append(error)
-        missing = [
-            table
-            for table in ("sessions", "messages", "session_model_usage")
-            if not table_columns(con, table)
-        ]
+        # Only a connection that opened can report absent tables.  With no
+        # connection every table looks absent, and that list would sit beside the
+        # real error implying Hermes moved the schema.
+        missing = (
+            [
+                table
+                for table in ("sessions", "messages", "session_model_usage")
+                if not table_columns(con, table)
+            ]
+            if con is not None
+            else []
+        )
         if missing:
             notes.append("tables absent from this database: " + ", ".join(missing))
         if self.db_path.with_name(self.db_path.name + "-wal").exists():
@@ -346,7 +353,11 @@ class SessionsDomain(SnapshotDomain[None]):
         """The session index, newest first, optionally filtered."""
         con, error = self._open()
         columns = select_columns(con, "sessions", SESSION_COLUMNS)
-        order = "started_at" if "started_at" in columns else columns[0]
+        order = (
+            "started_at"
+            if "started_at" in columns
+            else (columns[0] if columns else "id")
+        )
         where: list[str] = []
         params: list[Any] = []
         if model and "model" in columns:

@@ -100,21 +100,49 @@ def _get(row: Any, key: str, default: Any = "\u2014") -> Any:
     return default if value is None else value
 
 
+def _shape_error(data: Any, jobs: Any = None) -> str:
+    """Name a ``jobs.json`` that parsed but is not a shape this loader knows.
+
+    A file whose keys have moved is the one failure a reader cannot tell apart
+    from an empty schedule: the source is present, the count is 0, and nothing
+    says why.  Naming what was found turns that into a diagnosis.
+    """
+    if isinstance(jobs, list) and jobs:
+        seen = f"a list of {len(jobs)} entries that are not job objects"
+    elif isinstance(data, dict) and data:
+        seen = ", ".join(sorted(map(str, data))[:4])
+    else:
+        seen = type(data).__name__
+    return (
+        'unrecognized jobs.json shape: expected {"jobs": [...]}, a bare list or '
+        f"a map keyed by job id; found {seen}"
+    )
+
+
 def _load_jobs(path: Path) -> tuple[list[dict[str, Any]], str]:
     """Read the job definitions as a list, whatever shape they were stored in.
 
     ``jobs.json`` is an object with a ``jobs`` array today; older or hand-edited
     files may be a bare list or a map keyed by job id, so all three are accepted.
+    Anything else is reported by name rather than quietly read as no jobs: Hermes
+    owns this format, "0 jobs" beside a present file is indistinguishable from a
+    schedule that happens to be empty, and that is the reading a reader trusts.
     """
     data, error = read_json(path)
     if error:
         return [], error
     jobs = data.get("jobs", data) if isinstance(data, dict) else data
     if isinstance(jobs, dict):
+        # A map keyed by job id -- accepted only when every value is a job.
+        if not all(isinstance(value, dict) for value in jobs.values()):
+            return [], _shape_error(data)
         jobs = list(jobs.values())
     if not isinstance(jobs, list):
-        return [], f"unexpected jobs.json shape: {type(jobs).__name__}"
-    return [job for job in jobs if isinstance(job, dict)], ""
+        return [], _shape_error(data)
+    found = [job for job in jobs if isinstance(job, dict)]
+    if jobs and not found:
+        return [], _shape_error(data, jobs)
+    return found, ""
 
 
 def _job_title(job: dict[str, Any]) -> str:

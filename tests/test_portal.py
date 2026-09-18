@@ -586,6 +586,20 @@ class TestSources(unittest.TestCase):
             self.assertIsNone(data)
             self.assertIn("malformed JSON", json_error)
 
+    def test_a_file_that_is_not_a_database_is_reported_not_read_as_empty(self) -> None:
+        """SQLite opens lazily: a foreign file connects happily, and only the first
+        statement raises.  Unprobed, that reached the adapters as a missing column,
+        so a corrupt or half-written state.db read as Hermes' schema drift."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "state.db"
+            fake.write_bytes(b"\x00\x01this is not a database" * 64)
+            con, error = sources.open_sqlite(fake)
+            self.assertIsNone(con)
+            self.assertIn("cannot read", error)
+            self.assertIn("not a database", error)
+            self.assertIn("state.db", error)
+            self.assertEqual(sources.table_columns(con, "sessions"), set())
+
     def test_schema_drift_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "state.db"
@@ -736,6 +750,19 @@ class TestSessionsDomain(unittest.TestCase):
         self.assertIn("model 'gemini-3.6-flash'", filtered.count.definition)
         provider = self.domain.collections({"provider": "deepseek"})[0]
         self.assertEqual(provider.count.value, 1)
+
+    def test_an_unreadable_state_db_is_named_not_blamed_on_a_column(self) -> None:
+        """The diagnosis has to survive as far as the page.
+
+        A corrupt state.db used to be reported as "no started_at column" -- which
+        sends the reader to Hermes' schema instead of at the file that is broken.
+        """
+        (self.root / "state.db").write_bytes(b"\x00\x01not a database" * 64)
+        domain = sessions_domain.build_domain(hermes_home=self.root)
+        collection = domain.collections()[0]
+        self.assertEqual(collection.count.value, 0)
+        self.assertTrue(any("not a database" in note for note in collection.notes))
+        self.assertFalse(any("tables absent" in note for note in collection.notes))
 
     def test_usage_rollups_live_only_in_the_usage_domain(self) -> None:
         """One home per fact: sessions keeps the index and messages, usage the maths."""
@@ -898,6 +925,36 @@ class TestCronDomain(unittest.TestCase):
         hits = self.domain.search("nightly", 5)
         self.assertEqual([hit.id for hit in hits], [JOB_ID])
         self.assertEqual(self.domain.search("", 5), [])
+
+    def test_a_renamed_jobs_shape_is_named_not_counted_as_zero(self) -> None:
+        """A valid file whose keys moved is the one failure a reader cannot tell
+        apart from an empty schedule, so it names what it found instead."""
+        (self.root / "cron" / "jobs.json").write_text(
+            json.dumps({"schema_version": 2, "job_definitions": [{"job_id": "abc"}]}),
+            encoding="utf-8",
+        )
+        domain = cron_domain.build_domain(hermes_home=self.root)
+        collection = domain.collections()[0]
+        self.assertEqual(collection.count.value, 0)
+        self.assertTrue(
+            any("unrecognized jobs.json shape" in note for note in collection.notes),
+            collection.notes,
+        )
+        self.assertTrue(any("job_definitions" in note for note in collection.notes))
+
+    def test_a_map_keyed_by_job_id_is_still_accepted(self) -> None:
+        """The legacy shape stays supported: naming an unknown shape must not
+        start rejecting the old one."""
+        (self.root / "cron" / "jobs.json").write_text(
+            json.dumps({JOB_ID: {"id": JOB_ID, "name": "legacy", "enabled": True}}),
+            encoding="utf-8",
+        )
+        domain = cron_domain.build_domain(hermes_home=self.root)
+        collection = domain.collections()[0]
+        self.assertEqual(collection.count.value, 1)
+        self.assertFalse(
+            any("unrecognized" in note for note in collection.notes), collection.notes
+        )
 
     def test_malformed_jobs_json_is_a_note_not_a_crash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

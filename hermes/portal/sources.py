@@ -14,6 +14,7 @@ Every adapter goes through here, so the safety properties live in one place:
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -72,24 +73,37 @@ def path_source(label: str, path: Path, note: str = "") -> Source:
 
 
 def open_sqlite(path: Path) -> tuple[sqlite3.Connection | None, str]:
-    """Open *path* read-only.
+    """Open *path* read-only, and prove it holds a database before returning.
+
+    SQLite opens lazily: connecting to a file that is not a database *succeeds*,
+    and the first statement is what raises.  Left there, that failure reaches the
+    adapters as "no such table" or "no such column" -- every column reads as
+    renamed, and a truncated, replaced or half-written file is reported as schema
+    drift.  One probe here reports the true cause, for every adapter at once.
 
     Args:
         path: SQLite database file.
 
     Returns:
         ``(connection, "")`` on success, or ``(None, message)`` when the file is
-        absent or cannot be opened.  Never raises.
+        absent, unreadable or not a database.  Never raises.
     """
     db_path = Path(path)
     if not db_path.is_file():
         return None, f"database not found: {db_path}"
+    con: sqlite3.Connection | None = None
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         con.row_factory = sqlite3.Row
         con.execute("pragma query_only = 1")
+        # The probe: a real database answers this, a foreign file raises here
+        # rather than a hundred lines later in an adapter that assumed columns.
+        con.execute("select count(*) from sqlite_master").fetchone()
     except sqlite3.Error as exc:
-        return None, f"cannot open {db_path} read-only: {exc}"
+        if con is not None:
+            with contextlib.suppress(sqlite3.Error):
+                con.close()
+        return None, f"cannot read {db_path}: {exc}"
     return con, ""
 
 
