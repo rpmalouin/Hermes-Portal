@@ -205,6 +205,75 @@ class TestFileSurfaces(DoctorTestCase):
         self.assertIn("vault.notes", findings)
         self.assertIn("0 markdown note(s)", findings["vault.notes"].detail)
 
+    def test_link_syntax_the_page_reads_nothing_from_is_drift(self) -> None:
+        """The count agrees and the link view is dark: the shape moved, not the files.
+
+        Every note is present and counted, and the text carries ``[[`` twice, so a page
+        that read no link out of any of them is reading a syntax this vault no longer
+        uses -- the failure a count cannot see.
+        """
+        (self.vault / "Stray.md").write_text(
+            "a stray [[]] and an unclosed [[open\n", encoding="utf-8"
+        )
+        finding = next(f for f in self.check().drift if f.subject == "vault.notes")
+        self.assertIn("1 of 1 sampled notes whose text contains '[['", finding.detail)
+        self.assertIn("0 link(s) read across the vault", finding.detail)
+        self.assertIn("not the syntax on disk", finding.detail)
+        # a drift finding must fail a real run, not only a Report
+        self.assertEqual(
+            doctor.main(
+                ["--hermes-home", str(self.root), "--vault", str(self.vault), "--quiet"]
+            ),
+            1,
+        )
+
+    def test_a_vault_whose_links_parse_is_reported_not_flagged(self) -> None:
+        """The ordinary case, stated: the sample saw the syntax and the page read it."""
+        (self.vault / "A.md").write_text("see [[B]]\n", encoding="utf-8")
+        (self.vault / "B.md").write_text("see [[A]]\n", encoding="utf-8")
+        report = self.check()
+        self.assertTrue(report.ok, [f.subject for f in report.drift])
+        finding = next(f for f in report.findings if f.subject == "vault.notes")
+        self.assertEqual(finding.severity, "info")
+        self.assertIn("2 of 2 sampled notes whose text contains '[['", finding.detail)
+        self.assertIn("2 link(s) read across the vault", finding.detail)
+
+    def test_a_note_that_merely_mentions_the_syntax_is_not_drift(self) -> None:
+        """A partial carrier count is normal -- prose and code samples mention ``[[`` --
+        so only a page that read *nothing* is evidence; a ratio would be a guess."""
+        (self.vault / "Real.md").write_text("see [[Notes]]\n", encoding="utf-8")
+        (self.vault / "Notes.md").write_text(
+            "a literal [[]] and an unclosed [[Dangling\n", encoding="utf-8"
+        )
+        report = self.check()
+        self.assertTrue(report.ok, [f.subject for f in report.drift])
+        finding = next(f for f in report.findings if f.subject == "vault.notes")
+        self.assertIn("2 of 2 sampled notes whose text contains '[['", finding.detail)
+        self.assertIn("1 link(s) read across the vault", finding.detail)
+
+    def test_a_vault_without_the_syntax_says_nothing_about_its_shape(self) -> None:
+        """No carriers is not evidence, so the probe stays quiet rather than reporting a
+        zero it cannot interpret."""
+        (self.vault / "Plain.md").write_text(
+            "# Plain\nno links here\n", encoding="utf-8"
+        )
+        finding = next(f for f in self.check().findings if f.subject == "vault.notes")
+        self.assertNotIn("sampled", finding.detail)
+
+
+class TestShapeSample(DoctorTestCase):
+    """The sample walk, which decides what a shape probe is allowed to see."""
+
+    def test_a_small_population_is_taken_whole(self) -> None:
+        self.assertEqual(doctor._spread(["a", "b"], 25), ["a", "b"])
+
+    def test_a_large_population_is_spread_not_truncated(self) -> None:
+        """The first *limit* would be one folder: a tree is walked in sorted order."""
+        population = [str(index) for index in range(100)]
+        sample = doctor._spread(population, 4)
+        self.assertEqual(len(sample), 4)
+        self.assertEqual(sample, ["0", "25", "50", "75"])
+
 
 class TestOutput(DoctorTestCase):
     """The two surfaces: a person's terminal, and an agent's JSON."""

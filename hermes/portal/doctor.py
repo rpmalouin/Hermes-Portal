@@ -15,7 +15,11 @@ and why what this checks for is the other direction:
 * values whose **shape survived and whose meaning changed** -- the cron store writes
   ISO-8601 stamps where ``state.db`` holds epoch seconds -- so every declared stamp
   column is sampled and put through the same parser the pages use, and a number too
-  large to be seconds is called out as milliseconds.
+  large to be seconds is called out as milliseconds;
+* a **syntax that moved inside the files**, which no count can see.  The file-backed
+  pages are counted first (an empty page over a non-empty tree is visible), and then
+  sampled for the syntax they parse: a vault whose notes still carry ``[[`` and which
+  yields no link at all is a page whose shape died quietly, with the counts agreeing.
 
 It reports; it does not repair.  A rename is a decision about what a number *means*,
 so the fix belongs to whoever reads this: a person, or their agent, with the suite as
@@ -76,10 +80,55 @@ MAX_SOURCES = 20000
 
 
 @dataclass(frozen=True)
+class ShapeSample:
+    """What a probe found inside the files, next to what the page read out of them.
+
+    ``sampled`` is how many items the probe looked at, ``carriers`` how many of those
+    carry the syntax the page parses, and ``read`` what the page read from the source
+    as a whole -- the gate, because a probe has evidence only when that read is dark.
+    """
+
+    sampled: int
+    carriers: int
+    read: int
+
+
+@dataclass(frozen=True)
+class FileShape:
+    """A look *inside* files a count has already agreed about.
+
+    A count holds what is on disk next to what a page read, and it cannot see a syntax
+    that moved: the files are all still there, still counted, still shaped like files.
+    A probe answers the one question the count cannot -- whether the bytes still carry
+    what the parser looks for -- and it does so by asking a *different* question
+    (``'[[' in text``, not the parser's own pattern, which cannot answer a question
+    about itself) over a bounded, spread sample.
+
+    The verdict is deliberately narrow: a probe fires only when it saw the syntax and
+    the page read nothing at all, which is the one case where a zero read is evidence.
+    A partial carrier count is normal -- a note may merely discuss ``[[`` in prose --
+    so the probe stays quiet rather than guessing at a ratio.
+
+    This is a **second gate beside** :attr:`FileSurface.diagnostic`, and the two are
+    not in conflict: that flag governs the *item count*, and the vault's count is not
+    diagnostic (zero notes means the files are gone, which the source count already
+    says), while a vault that carries ``[[`` and yields no link is drift.
+
+    ``what`` names the items in the sample and ``parsed`` the thing the page reads out
+    of them, so the sentence is built in one place.
+    """
+
+    what: str
+    parsed: str
+    sample: Callable[[Path, Path], ShapeSample]
+
+
+@dataclass(frozen=True)
 class FileSurface:
     """A page whose items come from files rather than from a database.
 
-    ``diagnostic`` says whether an empty read is evidence.  It is not, everywhere:
+    ``diagnostic`` says whether an empty *item count* is evidence.  It is not, in
+    every case:
 
     * **memory**: ``entries separated by §`` comes from parsing each file, so files on
       disk and no entries is a format that moved.
@@ -90,6 +139,13 @@ class FileSurface:
     * **logs**: ``distinct error signatures`` is legitimately 0 on a healthy machine --
       firing on that would train a reader to ignore the report -- so it is reported
       without a verdict.
+
+    ``shape`` is optional and asks a different question: what is *inside* those files
+    (see :class:`FileShape`).  Exactly one surface has one, and the logs surface
+    deliberately does not -- its only independent signal would be a second error
+    detector beside the adapter's own ``ERRORISH``, which is the drifting copy this
+    module refuses everywhere else, and "no error line in the tail" is exactly what a
+    healthy machine looks like.
     """
 
     domain: str
@@ -97,6 +153,63 @@ class FileSurface:
     sources: str
     count: Callable[[Path, Path], int]
     diagnostic: bool = True
+    shape: FileShape | None = None
+
+
+# The sample walk and the vault probe are defined here rather than beside their
+# siblings further down, because FILE_SURFACES is built at import time and holds them.
+def _spread(items: Sequence[Any], limit: int) -> list[Any]:
+    """A deterministic sample spread across *items*, at most *limit* of them.
+
+    The first *limit* would sample one folder -- a tree is walked in sorted order -- and
+    the drift a probe looks for is a property of the format rather than of one item, so
+    a spread sample answers it for a bounded cost.
+
+    Args:
+        items: The population, in a stable order.
+        limit: How many to return at most.
+
+    Returns:
+        The population itself when it is small enough, else every ``len/limit``-th item.
+    """
+    if len(items) <= limit:
+        return list(items)
+    step = len(items) / limit
+    return [items[int(index * step)] for index in range(limit)]
+
+
+def _sample_vault_links(_root: Path, vault: Path) -> ShapeSample:
+    """Sample the vault for the link syntax the pages parse their links out of.
+
+    ``build_index`` is the adapter's own reader, so the sample is drawn from the same
+    notes the page indexes: a symlink out of the tree is refused here for the reason it
+    is refused there, and a source count cannot disagree with what the page served.
+
+    The carrier test is deliberately *not* the vault's own ``_LINK_RE``.  Pointing the
+    parser at the question "does this still look like the syntax you expect" answers yes
+    by construction; ``'[[' in text`` asks the bytes, and the parser's own reading is
+    what those bytes are then held against.
+
+    Args:
+        _root: Unused -- the vault's own path decides the tree.
+        vault: The vault root.
+
+    Returns:
+        How many notes the probe looked at, how many of those carry ``[[``, and how
+        many links the page read across the whole vault.
+    """
+    index = vault_domain.build_index(vault)
+    notes = sorted(index.notes.values(), key=lambda note: note.rel)
+    carriers = 0
+    for note in _spread(notes, SAMPLE_FILES):
+        try:
+            text = note.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "[[" in text:
+            carriers += 1
+    read = sum(len(note.links) for note in index.notes.values())
+    return ShapeSample(min(len(notes), SAMPLE_FILES), carriers, read)
 
 
 FILE_SURFACES = (
@@ -132,6 +245,11 @@ FILE_SURFACES = (
         "markdown note(s) under the vault root",
         lambda _root, vault: _walk_sources([vault], lambda p: p.suffix == ".md"),
         False,
+        shape=FileShape(
+            "notes whose text contains '[['",
+            "link(s) read across the vault",
+            _sample_vault_links,
+        ),
     ),
     FileSurface(
         "logs",
@@ -179,10 +297,15 @@ MAX_PLAUSIBLE_SECONDS = 1e11
 SAMPLE_ROWS = 25
 CANDIDATE_FLOOR = 0.4
 
+# How many files a shape probe reads.  The drift a probe looks for is a property of
+# the format rather than of one note, so a spread sample settles it without turning a
+# check into a second full read of the tree.
+SAMPLE_FILES = 25
+
 # What a green run does not mean.  Printed with every report so a clean bill of
 # health is not read as "everything the portal touches was verified".
 NOT_COVERED = (
-    "what is inside the files: a note whose links moved, a log line's shape",
+    "a log line's shape; links written in a syntax that leaves no '[[' to point at",
     "value plausibility beyond parseability (units, scales, offsets)",
     "whether a number still means what its label says",
     "Hermes' own version, which does not describe this shape (see the stamps above)",
@@ -517,6 +640,40 @@ def _walk_sources(roots: Sequence[Path], matches: Callable[[Path], bool]) -> int
     return total
 
 
+def _shape_finding(
+    surface: FileSurface, root: Path, vault: Path
+) -> tuple[str, str] | None:
+    """Put a surface's shape probe to its files, and judge only what it saw.
+
+    Args:
+        surface: The surface to probe.
+        root: Hermes root.
+        vault: Vault root.
+
+    Returns:
+        ``(severity, sentence)``, or ``None`` when there is nothing to report -- a
+        surface with no probe, or one whose files carry none of the syntax.  Drift is
+        claimed only when the syntax was seen *and* the page read nothing, because a
+        partial carrier count is normal and a ratio would be a guess.
+    """
+    shape = surface.shape
+    if shape is None:
+        return None
+    try:
+        sample = shape.sample(root, vault)
+    except Exception as exc:  # noqa: BLE001 - a probe that raises is the finding
+        return "warn", f"could not sample the files: {type(exc).__name__}: {exc}"
+    if not sample.carriers:
+        return None
+    seen = (
+        f"{sample.carriers} of {sample.sampled} sampled {shape.what}; "
+        f"{sample.read} {shape.parsed}"
+    )
+    if sample.read:
+        return "info", seen
+    return "drift", f"{seen}: the syntax it parses is not the syntax on disk"
+
+
 def _check_files(
     root: Path,
     vault_root: Path | None,
@@ -535,7 +692,9 @@ def _check_files(
 
     Returns:
         One finding per surface: drift when a diagnostic surface read nothing, info
-        otherwise (the numbers are worth seeing even when they agree).
+        otherwise (the numbers are worth seeing even when they agree).  A surface that
+        carries a shape probe may add a sentence to that finding, and claim drift when
+        the syntax is plainly in the files while the page read nothing out of them.
     """
     from .server import default_registry  # local: server imports this module's main
 
@@ -583,14 +742,16 @@ def _check_files(
                 )
             )
         else:
+            detail = (
+                f"{sources} {surface.sources}; the page reads {collection.count.value}"
+            )
+            shape = _shape_finding(surface, root, vault)
+            if shape is None:
+                findings.append(Finding("info", surface.domain, subject, detail))
+                continue
+            severity, sentence = shape
             findings.append(
-                Finding(
-                    "info",
-                    surface.domain,
-                    subject,
-                    f"{sources} {surface.sources}; the page reads "
-                    f"{collection.count.value}",
-                )
+                Finding(severity, surface.domain, subject, f"{detail}; {sentence}")
             )
     return findings
 
