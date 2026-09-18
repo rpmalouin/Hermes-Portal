@@ -483,18 +483,48 @@ def star_button(domain_key: str, record_id: str, title: str) -> str:
     )
 
 
-def _record_row(record: Record, domain_key: str, with_body: bool = False) -> str:
+def _row_target(record: Record, domain_key: str, domains: Sequence[Domain] = ()) -> str:
+    """Where a row's title should point: its ``href``, or a detail page, or nowhere.
+
+    The href always wins -- a box points at its filtered view, a card at its board note.
+    With no href this asks the domain whether it has a page for that id, which is the
+    only honest way to know.  The old version guessed ``/<domain>/<id>`` for every
+    record that lacked one, and 13 collections across 8 domains linked to a 404:
+    aggregate rows such as ``plugins.kinds`` and ``vault.tags``, and entities without a
+    page such as ``cron.runs`` and ``sessions.messages``.
+    """
+    if record.href:
+        return record.href
+    domain = next((entry for entry in domains if entry.key == domain_key), None)
+    if domain is None:
+        return ""
+    try:
+        found = domain.detail(str(record.id))
+    except Exception:  # noqa: BLE001 - a broken adapter is a missing page, not a crash
+        return ""
+    if found is None:
+        return ""
+    key = urllib.parse.quote(domain_key, safe="")
+    return f"/{key}/{urllib.parse.quote(str(record.id), safe='')}"
+
+
+def _record_row(
+    record: Record,
+    domain_key: str,
+    with_body: bool = False,
+    domains: Sequence[Domain] = (),
+) -> str:
     """Render one record as a list row.
 
-    The title links to the record's ``href`` when it declares one (a box points at
-    its filtered view), otherwise to its detail page.
+    The title links only when there is somewhere to go -- the record's own ``href``, or
+    a page the domain confirms exists.  A row with nowhere to go is plain text, never a
+    link to a 404.
     """
     title = html.escape(record.title)
     if not with_body:
-        target = record.href or (
-            f"/{html.escape(domain_key)}/{html.escape(record.id, quote=True)}"
-        )
-        title = f'<a href="{html.escape(target, quote=True)}">{title}</a>'
+        target = _row_target(record, domain_key, domains)
+        if target:
+            title = f'<a href="{html.escape(target, quote=True)}">{title}</a>'
     body = ""
     if with_body and record.body:
         preview = html.escape(record.body[:BODY_PREVIEW])
@@ -587,7 +617,9 @@ def render_picker(picker: Picker, domain_key: str) -> str:
     )
 
 
-def render_collection(collection: Collection, domain_key: str) -> str:
+def render_collection(
+    collection: Collection, domain_key: str, domains: Sequence[Domain] = ()
+) -> str:
     """Render one collection: counts, provenance, notes and its records."""
     extras = "".join(
         f'<span class="pill">{extra.value:,} {html.escape(extra.definition)}</span>'
@@ -615,7 +647,10 @@ def render_collection(collection: Collection, domain_key: str) -> str:
         )
         rows = f'<div class="grid">{cards}</div>' if cards else ""
     else:
-        rows = "".join(_record_row(record, domain_key) for record in collection.records)
+        rows = "".join(
+            _record_row(record, domain_key, domains=domains)
+            for record in collection.records
+        )
     if not rows:
         rows = '<p class="empty">no records</p>'
     picker = render_picker(collection.picker, domain_key) if collection.picker else ""
@@ -715,7 +750,8 @@ def render_index(
             for extra in overview.extra_counts
         )
         samples = "".join(
-            _record_row(record, domain.key) for record in overview.records[:3]
+            _record_row(record, domain.key, domains=domains)
+            for record in overview.records[:3]
         )
         sources_ok = sum(1 for source in overview.sources if source.present)
         notes = "".join(f"<li>{html.escape(str(note))}</li>" for note in overview.notes)
@@ -875,7 +911,7 @@ def render_domain(
             f'<a href="/{html.escape(domain.key)}">clear</a></p>'
         )
     blocks = "".join(
-        render_collection(collection, domain.key) for collection in collections
+        render_collection(collection, domain.key, domains) for collection in collections
     )
     body = (
         f'<div class="crumbs"><a href="/">Hermes Portal</a> / '
@@ -914,7 +950,7 @@ def render_detail(
     if record.body:
         body = f'<pre class="body">{html.escape(record.body)}</pre>'
     sections_html = "".join(
-        render_collection(section, domain.key) for section in sections
+        render_collection(section, domain.key, domains) for section in sections
     )
     page_body = (
         f'<div class="crumbs"><a href="/">Hermes Portal</a> / '
@@ -951,7 +987,9 @@ def render_search(
                 '<p class="empty">no match</p></section>'
             )
             continue
-        rows = "".join(_record_row(record, domain.key) for record in records)
+        rows = "".join(
+            _record_row(record, domain.key, domains=domains) for record in records
+        )
         blocks.append(
             '<section class="panel">'
             f'<h2><a href="/{html.escape(domain.key)}">'

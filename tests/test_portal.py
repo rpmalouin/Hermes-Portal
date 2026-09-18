@@ -13,6 +13,7 @@ run, so a stray write anywhere shows up as a failure.
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import json
 import re
@@ -967,9 +968,26 @@ class TestRender(unittest.TestCase):
         self.assertIn("no domain called", page)
         self.assertIn("skills", page)
 
-    def test_record_rows_only_link_when_a_detail_exists(self) -> None:
+    def test_a_row_links_only_when_the_domain_has_a_page_for_it(self) -> None:
+        """The renderer used to guess ``/<domain>/<id>`` for records with no href.
+
+        That guess produced links to a 404 in 13 collections across 8 domains:
+        aggregate rows like ``plugins.kinds``, and entities without a page like
+        ``cron.runs``.  Now the renderer asks the domain, so a record with nowhere
+        to go is plain text rather than a link.
+        """
         record = Record(id="x", title="X")
-        self.assertIn("/skills/x", render._record_row(record, "skills"))
+        # no domain in the list, so nothing to confirm: no link
+        self.assertNotIn("<a href", render._record_row(record, "skills"))
+        # the fixture has no such record, so the domain cannot confirm a page: no link
+        self.assertNotIn(
+            "<a href", render._record_row(record, "skills", domains=self.domains)
+        )
+        # an href always wins, whatever the domain would say
+        linked = Record(id="x", title="X", href="/skills?box=creative")
+        self.assertIn(
+            'href="/skills?box=creative"', render._record_row(linked, "skills")
+        )
         self.assertNotIn(
             "<a href", render._record_row(record, "skills", with_body=True)
         )
@@ -1032,6 +1050,47 @@ def fetch(url: str) -> tuple[int, str, str]:
 
 class TestServer(unittest.TestCase):
     """Routes, JSON endpoints, 404s, and the promise that nothing is written."""
+
+    def test_no_page_links_to_a_404(self) -> None:
+        """Every internal link the portal renders must resolve.
+
+        The renderer used to guess ``/<domain>/<id>`` for any record without an href,
+        which turned 13 collections across 8 domains into dead links -- cron runs,
+        session messages, vault cards and tasks, log signatures, graph communities,
+        plugin and memory kinds, usage top sessions, vault tags, cron incidents.  This
+        walks every domain page, extracts each internal href and fetches it.
+        """
+        domains = (
+            "",
+            "/skills",
+            "/sessions",
+            "/cron",
+            "/usage",
+            "/health",
+            "/logs",
+            "/memory",
+            "/vault",
+            "/graph",
+            "/plugins",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_hermes_root(Path(tmp))
+            with run_portal(root) as base:
+                checked = 0
+                for path in domains:
+                    status, _ctype, page = fetch(f"{base}{path}")
+                    self.assertEqual(status, 200, path)
+                    hrefs = sorted(set(re.findall(r'href="(/[^"#]*)"', page)))
+                    self.assertGreater(
+                        len(hrefs), 0, f"{path} rendered no links at all"
+                    )
+                    for href in hrefs:
+                        target = html.unescape(href)
+                        code, _c, _p = fetch(f"{base}{target}")
+                        checked += 1
+                        self.assertEqual(code, 200, f"{path} links to {target}")
+                # the fixture is small; if this collapses, the crawl stopped crawling
+                self.assertGreater(checked, 40, "suspiciously few links checked")
 
     def test_every_route_answers_and_nothing_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

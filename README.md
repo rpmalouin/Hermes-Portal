@@ -725,7 +725,7 @@ through its own MCP tools.
 ## Tests and checks
 
 ```sh
-python3 -m unittest discover -s tests -t .        # 440 tests, ~25s, no install needed
+python3 -m unittest discover -s tests -t .        # 441 tests, ~25s, no install needed
 uvx ruff@0.14.4 check .                           # lint, configured in pyproject.toml
 uvx ruff@0.14.4 format --check .
 

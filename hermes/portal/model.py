@@ -88,11 +88,6 @@ class Record:
     group: str = ""
     href: str = ""
 
-    @property
-    def detail_href(self) -> str:
-        """Where the title should point, when the renderer cannot know better."""
-        return self.href
-
 
 @dataclass(frozen=True)
 class Collection:
