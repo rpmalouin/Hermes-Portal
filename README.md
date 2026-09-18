@@ -12,7 +12,7 @@ No pull requests, you are free to fork it, use it, enhance it on your own.
 [Why it exists](#why-this-project) is the next section; [how to run
 it](#how-to-use-this) is the one after that. The layout:
 
-<img width="2826" height="1819" alt="Screenshot 2026-09-17 at 7 47 40 PM" src="https://github.com/user-attachments/assets/5b4e7e1d-c6a1-4a1f-98c7-27defde17763" />
+![The Hermes Portal index page: the eight skill tiles across the top, then a card per domain](/docs/screenshot.png)
 
 ```
 hermes/
