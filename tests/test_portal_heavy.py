@@ -30,7 +30,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes.portal import sources  # noqa: E402
-from hermes.portal.domains import default_registry  # noqa: E402
+from hermes.portal.domains import default_registry, graph_node  # noqa: E402
 from hermes.portal.domains import graph as graph_domain  # noqa: E402
 from hermes.portal.domains import vault as vault_domain  # noqa: E402
 
@@ -619,6 +619,122 @@ class RegistryTestCase(unittest.TestCase):
             self.assertTrue(domain.summary, key)
 
 
+class GraphNodePageTestCase(unittest.TestCase):
+    """The node page, now a module of its own (`graph_node`).
+
+    None of this was covered while the page was two methods and a nested closure inside
+    ``GraphDomain`` -- which is why the split was worth doing: ``edge_collection`` is
+    callable by name now, so a section can be asked about directly instead of through a
+    whole page.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.db = make_graph_db(Path(cls._tmp.name) / "graph.db")
+        cls.domain = graph_domain.GraphDomain(graph_db=cls.db)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def record(self, name: str = "ProcessRegistry.get"):
+        """The record the node page serves for *name*."""
+        return graph_node.node_detail(self.domain, name)
+
+    def sections(self, name: str = "ProcessRegistry.get"):
+        """The sections behind *name*, as a list."""
+        return list(graph_node.node_sections(self.domain, name))
+
+    def test_the_record_carries_what_the_builder_knows_about_the_node(self) -> None:
+        record = self.record()
+        assert record is not None
+        self.assertEqual(record.title, "get")
+        self.assertEqual(record.id, "ProcessRegistry.get")
+        self.assertEqual(record.subtitle, "ProcessRegistry.get")
+        self.assertEqual(record.badges, ("Function", "python", "source"))
+        fields = dict(record.fields)
+        self.assertEqual(fields["file"], "/p/process_registry.py:10")
+        self.assertEqual(fields["lines"], "10-20")
+        self.assertEqual(fields["parent"], "ProcessRegistry")
+        self.assertEqual(fields["return type"], "Session")
+        self.assertEqual(fields["risk score"], "0.9")
+        self.assertEqual(fields["callers"], "1386")
+        self.assertEqual(fields["test coverage"], "tested")
+        self.assertEqual(record.body, "(self, id)")
+
+    def test_the_record_links_by_value_not_by_guess(self) -> None:
+        """The link was hand-built as ``/graph``; ``filter_url`` must produce that exact
+        string, and the A/B against the running old build showed the same page bytes."""
+        record = self.record()
+        assert record is not None
+        self.assertEqual(record.links, (("/graph", "All communities"),))
+
+    def test_a_node_the_graph_does_not_have_has_no_page_and_no_sections(self) -> None:
+        self.assertIsNone(self.record("NoSuch.node"))
+        self.assertEqual(self.sections("NoSuch.node"), [])
+
+    def test_the_sections_are_edges_out_in_flows_and_community(self) -> None:
+        sections = self.sections()
+        self.assertEqual(
+            [s.key for s in sections], ["edges-out", "edges-in", "flows", "community"]
+        )
+        self.assertEqual(
+            [s.title for s in sections],
+            ["Edges out", "Edges in", "Flows through this node", "Community"],
+        )
+        for section in sections:
+            self.assertEqual(
+                section.count.value,
+                len(section.records),
+                f"{section.key}: count {section.count.value} != "
+                f"{len(section.records)} records",
+            )
+
+    def test_each_edge_names_the_node_at_its_far_end(self) -> None:
+        out, incoming = self.sections()[:2]
+        self.assertEqual(out.records[0].title, "cli.format")
+        self.assertEqual(out.records[0].subtitle, "calls · /p/process_registry.py:12")
+        self.assertEqual(out.records[0].badges, ("calls", "confidence 0.9"))
+        self.assertEqual(
+            out.count.definition,
+            "edges with this node as target_qualified (capped at 40)",
+        )
+        self.assertEqual(incoming.records[0].title, "Target.run")
+        self.assertEqual(
+            incoming.count.definition,
+            "edges with this node as source_qualified (capped at 40)",
+        )
+
+    def test_the_flow_section_lists_the_flows_through_the_node(self) -> None:
+        flows = self.sections()[2]
+        self.assertEqual(flows.records[0].title, "websocket_flow")
+        self.assertEqual(flows.records[0].badges, ("criticality 0.91",))
+
+    def test_the_community_section_is_the_one_the_builder_filed_it_under(self) -> None:
+        community = self.sections()[3]
+        self.assertEqual(community.records[0].title, "tools-resolve")
+        self.assertEqual(community.records[0].subtitle, "resolves tools")
+        self.assertEqual(community.records[0].badges, ("120 nodes",))
+
+    def test_a_zero_beside_a_real_count_is_kept(self) -> None:
+        """A node nobody calls *from* still gets all four sections: an absent section
+        would read as an unread one, and the zero is a number the page stands behind."""
+        counts = {s.key: s.count.value for s in self.sections("Target")}
+        self.assertEqual(
+            counts, {"edges-out": 0, "edges-in": 1, "flows": 1, "community": 1}
+        )
+
+    def test_a_store_that_will_not_open_is_quiet_rather_than_raising(self) -> None:
+        """The reachable half of the seam the sections no longer carry ``unavailable=``
+        for: a store that cannot be opened reads as no node, never as an exception."""
+        broken = graph_domain.GraphDomain(graph_db=self.db.parent / "absent.db")
+        self.assertIsNone(graph_node.node_detail(broken, "ProcessRegistry.get"))
+        self.assertEqual(
+            list(graph_node.node_sections(broken, "ProcessRegistry.get")), []
+        )
+
+
 class GraphPrimitivesTestCase(unittest.TestCase):
     """The graph domain's helpers, called by name.
 
@@ -692,9 +808,9 @@ class GraphPrimitivesTestCase(unittest.TestCase):
         con, _error = self.domain._open()
         assert con is not None
         self.assertEqual(self.domain._metadata(con)["schema_version"], "9")
-        node = self.domain._node(con, "ProcessRegistry.get")
+        node = graph_node.find_node(con, "ProcessRegistry.get")
         self.assertEqual(graph_domain._get(node, "kind"), "Function")
-        self.assertIsNone(self.domain._node(con, "NoSuch.node"))
+        self.assertIsNone(graph_node.find_node(con, "NoSuch.node"))
         graph_domain._close(con)
 
     def test_sources_name_the_store(self) -> None:

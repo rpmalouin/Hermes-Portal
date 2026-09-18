@@ -48,6 +48,7 @@ from ..sources import (
     unreadable,
 )
 from .base import SnapshotDomain
+from .graph_node import node_detail, node_sections
 
 EDGE_COUNT_TTL = 900.0
 STALE_AFTER_HOURS = 48
@@ -55,8 +56,6 @@ COMMUNITY_CAP = 40
 RISK_CAP = 25
 CALLER_CAP = 25
 FLOW_CAP = 25
-EDGE_CAP = 40
-NODE_CAP = 100
 
 
 def _close(con: Any) -> None:
@@ -463,178 +462,20 @@ class GraphDomain(SnapshotDomain[None]):
             self._flows_collection(),
         ]
 
-    def _node(self, con: Any, qualified_name: str) -> Any | None:
-        rows, _error = query(
-            con,
-            "select id, name, qualified_name, kind, language, file_path, line_start, "
-            "line_end, parent_name, params, return_type, is_test, signature "
-            "from nodes where qualified_name = ? limit 1",
-            (qualified_name,),
-        )
-        return rows[0] if rows else None
-
     def detail(self, record_id: str) -> Record | None:
-        """One node: where it lives and what the builder says about it."""
-        con, error = self._open()
-        row = self._node(con, record_id)
-        if row is None:
-            _close(con)
-            return None
-        risk_rows, _risk_error = query(
-            con,
-            "select risk_score, caller_count, test_coverage, security_relevant "
-            "from risk_index where qualified_name = ? limit 1",
-            (record_id,),
-        )
-        _close(con)
-        risk = risk_rows[0] if risk_rows else None
-        return Record(
-            id=str(_get(row, "qualified_name")),
-            title=str(_get(row, "name")),
-            subtitle=f"{_get(row, 'qualified_name')}",
-            badges=(
-                str(_get(row, "kind")),
-                str(_get(row, "language")),
-                "test" if _get(row, "is_test") else "source",
-            ),
-            fields=(
-                ("qualified name", str(_get(row, "qualified_name"))),
-                ("kind", str(_get(row, "kind"))),
-                ("language", str(_get(row, "language"))),
-                ("file", f"{_get(row, 'file_path')}:{_get(row, 'line_start')}"),
-                ("lines", f"{_get(row, 'line_start')}-{_get(row, 'line_end')}"),
-                ("parent", str(_get(row, "parent_name"))),
-                ("return type", str(_get(row, "return_type"))),
-                ("is test", str(_get(row, "is_test"))),
-                ("signature", truncate(str(_get(row, "signature", "")), 300)),
-                ("risk score", str(_get(risk, "risk_score")) if risk else "\u2014"),
-                ("callers", str(_get(risk, "caller_count")) if risk else "\u2014"),
-                (
-                    "test coverage",
-                    str(_get(risk, "test_coverage")) if risk else "\u2014",
-                ),
-            ),
-            links=(("/graph", "All communities"),),
-            body=truncate(str(_get(row, "params", "")), 1000),
-        )
+        """One node: where it lives and what the builder says about it.
+
+        The node page lives in :mod:`..graph_node`; the domain keeps the connection
+        discipline, the cached counts and the index pages.
+        """
+        return node_detail(self, record_id)
 
     def detail_sections(self, record_id: str) -> Sequence[Collection]:
-        """Behind a node: its edges, its flows and its community."""
-        con, error = self._open()
-        node = self._node(con, record_id)
-        if node is None:
-            _close(con)
-            return []
-        node_id = _get(node, "id")
-        out_rows, out_error = query(
-            con,
-            "select kind, target_qualified, file_path, line, confidence from edges "
-            "where source_qualified = ? limit ?",
-            (record_id, EDGE_CAP),
-        )
-        in_rows, in_error = query(
-            con,
-            "select kind, source_qualified, file_path, line, confidence from edges "
-            "where target_qualified = ? limit ?",
-            (record_id, EDGE_CAP),
-        )
-        flow_rows, flow_error = query(
-            con,
-            "select f.id as id, f.name as name, f.criticality as criticality "
-            "from flow_memberships m join flows f on f.id = m.flow_id "
-            "where m.node_id = ? limit ?",
-            (node_id, EDGE_CAP),
-        )
-        community_rows, community_error = query(
-            con,
-            "select c.name as name, c.size as size, s.purpose as purpose "
-            "from nodes n join communities c on c.id = n.community_id "
-            "left join community_summaries s on s.community_id = c.id "
-            "where n.id = ? limit 1",
-            (node_id,),
-        )
-        _close(con)
+        """Behind a node: its edges, its flows and its community.
 
-        def edge_collection(key: str, title: str, rows: Any, other: str) -> Collection:
-            return build_collection(
-                key,
-                title,
-                f"Edges where this node is the {other}.",
-                f"edges with this node as {other} (capped at {EDGE_CAP})",
-                [
-                    Record(
-                        id=f"{key}-{index}",
-                        title=truncate(str(_get(row, other)), 90),
-                        subtitle=f"{_get(row, 'kind')} · {_get(row, 'file_path')}:"
-                        f"{_get(row, 'line')}",
-                        badges=(
-                            str(_get(row, "kind")),
-                            f"confidence {_get(row, 'confidence')}",
-                        ),
-                    )
-                    for index, row in enumerate(rows)
-                ],
-                sources=self._sources(),
-                as_of=as_of(),
-                unavailable=unreadable(error, self.db_path),
-            )
-
-        sections = [
-            edge_collection("edges-out", "Edges out", out_rows, "target_qualified"),
-            edge_collection("edges-in", "Edges in", in_rows, "source_qualified"),
-            build_collection(
-                "flows",
-                "Flows through this node",
-                "Execution flows this node takes part in.",
-                "flow memberships for this node",
-                [
-                    Record(
-                        id=str(_get(row, "id")),
-                        title=truncate(str(_get(row, "name")), 90),
-                        badges=(f"criticality {_get(row, 'criticality')}",),
-                    )
-                    for row in flow_rows
-                ],
-                sources=self._sources(),
-                as_of=as_of(),
-                unavailable=unreadable(error, self.db_path),
-            ),
-            build_collection(
-                "community",
-                "Community",
-                "The cluster the builder filed this node under.",
-                "communities containing this node",
-                [
-                    Record(
-                        id=str(_get(row, "name")),
-                        title=str(_get(row, "name")),
-                        subtitle=snippet(_get(row, "purpose", ""), 160),
-                        badges=(f"{_get(row, 'size')} nodes",),
-                    )
-                    for row in community_rows
-                ],
-                sources=self._sources(),
-                as_of=as_of(),
-                unavailable=unreadable(error, self.db_path),
-            ),
-        ]
-        notes = tuple(
-            note
-            for note in (error, out_error, in_error, flow_error, community_error)
-            if note
-        )
-        if notes and sections:
-            sections[0] = build_collection(
-                sections[0].key,
-                sections[0].title,
-                sections[0].description,
-                sections[0].count.definition,
-                list(sections[0].records),
-                sources=self._sources(),
-                notes=notes,
-                as_of=as_of(),
-            )
-        return sections
+        Delegates to :mod:`..graph_node` for the same reason :meth:`detail` does.
+        """
+        return node_sections(self, record_id)
 
     def search(self, needle: str, limit: int) -> Sequence[Record]:
         """Full-text search over node names, paths and signatures via nodes_fts."""
