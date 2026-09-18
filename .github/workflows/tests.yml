@@ -101,3 +101,24 @@ jobs:
 
       - name: Click every control
         run: node tools/click_check.js http://127.0.0.1:8087/
+
+  drift:
+    # The suite asserts behaviour one collection at a time; this serves five deliberately
+    # broken fixtures and crawls every route, which is the shape the three bugs below
+    # actually had: a page that kept answering while its numbers lied.  It is the check
+    # that found them, promoted out of a scratch script so it runs on every push.
+    # No install and no fixture on disk -- the portal is stdlib only and the shape it
+    # breaks comes from the recorded snapshot in tools/schema_snapshot.py.
+    name: drift (broken fixtures)
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Serve broken Hermes fixtures and crawl every route
+        run: python3 tools/drift_check.py

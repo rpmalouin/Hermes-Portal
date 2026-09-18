@@ -758,6 +758,9 @@ python3 -m unittest discover -s tests -t .        # 472 tests, ~30s, no install 
 uvx ruff@0.14.4 check .                           # lint, configured in pyproject.toml
 uvx ruff@0.14.4 format --check .
 
+# five deliberately broken Hermes fixtures, served and crawled route by route:
+python3 tools/drift_check.py
+
 # the page's controls are JavaScript, so they need a browser to be sure of:
 node tools/click_check.js http://127.0.0.1:8087/  # needs a Chromium on the CDP port
 ```
