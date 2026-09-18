@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import sqlite3
 import sys
 import tempfile
@@ -1357,6 +1358,53 @@ class HostAndHeaderTestCase(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", policy)
         # no Python version on offer
         self.assertEqual(headers.get("Server").strip(), "hermes-portal")
+
+    def test_the_policy_allows_the_scripts_the_page_actually_loads(self) -> None:
+        """A policy that blocks the page's own script kills every control on it.
+
+        This is the check the first version of the CSP needed.  That one asserted the
+        headers were *present* and shipped ``script-src 'unsafe-inline'``, which does
+        not cover an external ``<script src>`` -- so /app.js was blocked, and the only
+        thing left working was the search form, because it is plain HTML.
+        """
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+            urllib.request.urlopen(f"{base}/", timeout=10) as response,
+        ):
+            policy = response.headers.get("Content-Security-Policy", "")
+            page = response.read().decode()
+        sources = re.findall(r'<script[^>]*\ssrc="([^"]+)"', page)
+        self.assertTrue(sources, "the page should load its script")
+        directives = {
+            part.strip().split(" ", 1)[0]: part.strip().split(" ", 1)[1]
+            for part in policy.split(";")
+            if " " in part.strip()
+        }
+        script_src = directives.get("script-src", "")
+        for source in sources:
+            if source.startswith("/"):  # same-origin, so 'self' has to be allowed
+                with self.subTest(script=source):
+                    self.assertIn("'self'", script_src)
+
+    def test_the_script_is_deferred_so_the_elements_it_wires_exist(self) -> None:
+        """The script wires #theme-toggle, #refresh, #palette and every star button.
+
+        It sits before that markup in the body, so without ``defer`` it ran while none
+        of those elements existed: every ``if (element)`` guard failed, the palette's
+        own ``if (!overlay) { return; }`` aborted the rest of the file, and the theme
+        toggle, the command palette, the stars and the refresh button were all dead --
+        while the search form, being plain HTML, kept working.  That is the report it
+        took a browser to produce; no header or markup assertion can see it.
+        """
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            run_portal(make_hermes_root(Path(tmp))) as base,
+        ):
+            page = urllib.request.urlopen(f"{base}/", timeout=10).read().decode()
+        tags = re.findall(r"<script[^>]*\ssrc=[^>]*>", page)
+        self.assertEqual(len(tags), 1, "expected exactly one external script")
+        self.assertIn("defer", tags[0])
 
     def test_the_json_routes_carry_them_too(self) -> None:
         with (

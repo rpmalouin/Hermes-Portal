@@ -351,7 +351,7 @@ PAGE = Template(
 </style>
 </head>
 <body>
-<script src="/app.js"></script>
+<script defer src="/app.js"></script>
 $nav
 $body
 <footer>

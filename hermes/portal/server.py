@@ -74,9 +74,13 @@ SECURITY_HEADERS = (
     ("X-Frame-Options", "DENY"),
     (
         "Content-Security-Policy",
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "img-src data:; connect-src 'self'; form-action 'self'; base-uri 'none'; "
-        "frame-ancestors 'none'",
+        # 'self' as well as 'unsafe-inline'.  The page has an inline theme script and
+        # also loads /app.js; 'unsafe-inline' alone does not cover an external
+        # <script src>, which silently killed every control on the page except the
+        # search form.  A policy that breaks the page is not a hardening.
+        "default-src 'none'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'; "
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     ),
 )
 
