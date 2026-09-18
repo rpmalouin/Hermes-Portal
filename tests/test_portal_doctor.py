@@ -30,13 +30,17 @@ class DoctorTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = build_root(Path(self._tmp.name))
+        # An empty vault, so a check never walks a real one (the default is a path on
+        # this machine, which would make the tests non-hermetic and slow).
+        self.vault = Path(self._tmp.name) / "vault"
+        self.vault.mkdir()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
     def check(self) -> doctor.Report:
         """Run the doctor against this test's root."""
-        return doctor.inspect(home=self.root)
+        return doctor.inspect(home=self.root, vault_root=self.vault)
 
     def sql(self, store: str, statement: str) -> None:
         """Run one statement against a store under this root."""
@@ -164,6 +168,44 @@ class TestDrift(DoctorTestCase):
         )
 
 
+class TestFileSurfaces(DoctorTestCase):
+    """The file-backed pages: a format that moves empties a page instead of crashing."""
+
+    def test_a_memory_file_the_page_does_not_recognise_is_drift(self) -> None:
+        """The count is parsed out of the files, so a name it does not know reads 0."""
+        memories = self.root / "memories"
+        memories.mkdir()
+        (memories / "NOTES.md").write_text("an entry\n§\nanother\n", encoding="utf-8")
+        finding = next(f for f in self.check().drift if f.subject == "memory.entries")
+        self.assertIn("read none of them", finding.detail)
+
+    def test_a_memory_file_with_entries_is_reported_as_read(self) -> None:
+        memories = self.root / "memories"
+        memories.mkdir()
+        (memories / "MEMORY.md").write_text("one\n§\ntwo\n", encoding="utf-8")
+        findings = {f.subject: f for f in self.check().findings}
+        self.assertIn("memory.entries", findings)
+        self.assertIn("memory file(s)", findings["memory.entries"].detail)
+        self.assertIn("the page reads", findings["memory.entries"].detail)
+
+    def test_a_page_that_may_legitimately_be_empty_is_not_drift(self) -> None:
+        """Log signatures are 0 on a healthy machine; firing on that teaches a reader
+        to ignore the report, so that surface is counted without a verdict."""
+        logs = self.root / "logs"
+        logs.mkdir()
+        (logs / "agent.log").write_text(
+            "2026-09-18 09:00:00,000 INFO nothing to see\n", encoding="utf-8"
+        )
+        report = self.check()
+        self.assertTrue(report.ok, [f.subject for f in report.drift])
+        self.assertTrue(any(f.subject == "logs.signatures" for f in report.findings))
+
+    def test_the_empty_vault_is_reported_rather_than_assumed(self) -> None:
+        findings = {f.subject: f for f in self.check().findings}
+        self.assertIn("vault.notes", findings)
+        self.assertIn("0 markdown note(s)", findings["vault.notes"].detail)
+
+
 class TestOutput(DoctorTestCase):
     """The two surfaces: a person's terminal, and an agent's JSON."""
 
@@ -187,19 +229,30 @@ class TestOutput(DoctorTestCase):
         self.assertIn("state.db schema_version", payload["hints"])
 
     def test_main_exit_codes_follow_the_verdict(self) -> None:
-        self.assertEqual(doctor.main(["--hermes-home", str(self.root), "--quiet"]), 0)
+        base = [
+            "--hermes-home",
+            str(self.root),
+            "--vault",
+            str(self.vault),
+            "--quiet",
+        ]
+        self.assertEqual(doctor.main(base), 0)
         (self.root / "cron" / "jobs.json").write_text("{oops", encoding="utf-8")
-        self.assertEqual(doctor.main(["--hermes-home", str(self.root), "--quiet"]), 1)
+        self.assertEqual(doctor.main(base), 1)
 
     def test_the_server_routes_the_doctor_subcommand(self) -> None:
         """`hermes-portal doctor` is the console script's own entry point."""
-        self.assertEqual(
-            server.main(["doctor", "--hermes-home", str(self.root), "--quiet"]), 0
-        )
+        base = [
+            "doctor",
+            "--hermes-home",
+            str(self.root),
+            "--vault",
+            str(self.vault),
+            "--quiet",
+        ]
+        self.assertEqual(server.main(base), 0)
         (self.root / "cron" / "jobs.json").write_text("{oops", encoding="utf-8")
-        self.assertEqual(
-            server.main(["doctor", "--hermes-home", str(self.root), "--quiet"]), 1
-        )
+        self.assertEqual(server.main(base), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover - run through the suite

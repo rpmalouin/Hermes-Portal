@@ -465,8 +465,10 @@ values through the same parser the pages use.
 Two limits worth knowing: the version stamps it prints are **hints, not contracts**
 (`state.db` advances `schema_version` for data migrations, so a shape change can leave it
 unmoved, and the cron store carries no stamp at all), and a green run covers the tables and
-columns above -- not file formats (skills, memory, the vault, plugin manifests, logs), and
-not value plausibility beyond whether the stamps parse. Exit code is `1` on drift.
+columns above plus the file-backed pages by **count** -- memory entries, skills, plugin
+manifests, vault notes, log signatures, each held next to how many sources are on disk --
+but not what is *inside* those files (a note whose links moved, a log line's shape), and not
+value plausibility beyond whether the stamps parse. Exit code is `1` on drift.
 
 ### What it does about being a local server holding secrets
 

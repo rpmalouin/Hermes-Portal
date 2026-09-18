@@ -30,10 +30,11 @@ import argparse
 import dataclasses
 import difflib
 import json
+import os
 import re
 import sqlite3
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from .domains import cron as cron_domain
 from .domains import graph as graph_domain
 from .domains import sessions as sessions_domain
 from .domains import usage as usage_domain
+from .domains import vault as vault_domain
 from .sources import (
     cron_dir,
     hermes_root,
@@ -50,6 +52,96 @@ from .sources import (
     state_db,
     table_columns,
     to_datetime,
+)
+
+# Directories never worth walking when counting sources: they are not content, and a
+# vault or a plugin tree can hold a copy of one big enough to matter.
+SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".obsidian",
+        ".trash",
+        ".smart-env",
+    }
+)
+
+# A bound on the walk, so a check never turns into a survey of a 100k-file tree.
+MAX_SOURCES = 20000
+
+
+@dataclass(frozen=True)
+class FileSurface:
+    """A page whose items come from files rather than from a database.
+
+    ``diagnostic`` says whether an empty read is evidence.  It is not, everywhere:
+
+    * **memory**: ``entries separated by §`` comes from parsing each file, so files on
+      disk and no entries is a format that moved.
+    * **skills**: the item count is the frontmatter names, and a name falls back to the
+      directory -- so zero items means the tree could not be walked at all.
+    * **vault** and **plugins** count filesystem facts (notes, manifests), so zero means
+      the files are gone, which the ``sources`` number already says.
+    * **logs**: ``distinct error signatures`` is legitimately 0 on a healthy machine --
+      firing on that would train a reader to ignore the report -- so it is reported
+      without a verdict.
+    """
+
+    domain: str
+    collection: str
+    sources: str
+    count: Callable[[Path, Path], int]
+    diagnostic: bool = True
+
+
+FILE_SURFACES = (
+    FileSurface(
+        "memory",
+        "entries",
+        "memory file(s) under the profiles",
+        lambda root, _vault: _walk_sources(
+            _memory_roots(root), lambda p: p.suffix == ".md"
+        ),
+    ),
+    FileSurface(
+        "skills",
+        "skills",
+        "SKILL.md file(s) reachable from the skills roots",
+        lambda root, _vault: _walk_sources(
+            _skills_roots(root), lambda p: p.name == "SKILL.md"
+        ),
+    ),
+    FileSurface(
+        "plugins",
+        "plugins",
+        "director(y/ies) holding a plugin.yaml",
+        lambda root, _vault: _walk_sources(
+            [root / "plugins", root / "hermes-agent" / "plugins"],
+            lambda p: p.name == "plugin.yaml",
+        ),
+        False,
+    ),
+    FileSurface(
+        "vault",
+        "notes",
+        "markdown note(s) under the vault root",
+        lambda _root, vault: _walk_sources([vault], lambda p: p.suffix == ".md"),
+        False,
+    ),
+    FileSurface(
+        "logs",
+        "signatures",
+        "log file(s) in scope",
+        lambda root, _vault: _walk_sources(
+            [root / "logs"], lambda p: p.suffix == ".log"
+        ),
+        False,
+    ),
 )
 
 # Columns the health adapter names inline (it queries them without a constant).
@@ -90,7 +182,7 @@ CANDIDATE_FLOOR = 0.4
 # What a green run does not mean.  Printed with every report so a clean bill of
 # health is not read as "everything the portal touches was verified".
 NOT_COVERED = (
-    "file formats: skills trees, memory files, the vault, plugin manifests, logs",
+    "what is inside the files: a note whose links moved, a log line's shape",
     "value plausibility beyond parseability (units, scales, offsets)",
     "whether a number still means what its label says",
     "Hermes' own version, which does not describe this shape (see the stamps above)",
@@ -378,6 +470,131 @@ def _check_table(
     return findings
 
 
+def _memory_roots(root: Path) -> list[Path]:
+    """Everywhere a memory file can sit: the root's, then each profile's."""
+    roots = [root / "memories"]
+    profiles = root / "profiles"
+    if profiles.is_dir():
+        roots.extend(sorted(p / "memories" for p in profiles.iterdir()))
+    return roots
+
+
+def _skills_roots(root: Path) -> list[Path]:
+    """Everywhere a skill can sit, the root's and each profile's."""
+    roots = [root / "skills"]
+    profiles = root / "profiles"
+    if profiles.is_dir():
+        roots.extend(sorted(p / "skills" for p in profiles.iterdir()))
+    return roots
+
+
+def _walk_sources(roots: Sequence[Path], matches: Callable[[Path], bool]) -> int:
+    """Count files under *roots* that *matches* accepts, bounded and symlink-aware.
+
+    ``followlinks=True`` is load-bearing: a profile's ``skills/`` is a tree *made* of
+    symlinks to a shared root, so a walk that refuses to follow them counts nothing and
+    would report every skill as unread.
+
+    Args:
+        roots: Directories to walk; missing ones are skipped.
+        matches: Applied to each file.
+
+    Returns:
+        How many files matched, capped at :data:`MAX_SOURCES`.
+    """
+    total = 0
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+            dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+            for filename in filenames:
+                if not matches(Path(dirpath) / filename):
+                    continue
+                total += 1
+                if total >= MAX_SOURCES:
+                    return total
+    return total
+
+
+def _check_files(
+    root: Path,
+    vault_root: Path | None,
+    surfaces: Sequence[FileSurface] = FILE_SURFACES,
+) -> list[Finding]:
+    """Compare each file-backed page's item count with the sources on disk.
+
+    A format that moves does not crash a file adapter -- it makes the page empty.  This
+    is the one place that holds what is on disk next to what was read, so an empty page
+    over a non-empty tree is visible rather than looking like a quiet machine.
+
+    Args:
+        root: Hermes root.
+        vault_root: Vault to check; ``None`` uses the vault domain's own default.
+        surfaces: What to check.
+
+    Returns:
+        One finding per surface: drift when a diagnostic surface read nothing, info
+        otherwise (the numbers are worth seeing even when they agree).
+    """
+    from .server import default_registry  # local: server imports this module's main
+
+    try:
+        registry = default_registry(hermes_home=root, vault_root=vault_root)
+    except OSError as exc:
+        return [Finding("warn", "files", "-", f"could not build the adapters: {exc}")]
+    vault = Path(vault_root) if vault_root is not None else vault_domain.DEFAULT_VAULT
+
+    findings: list[Finding] = []
+    for surface in surfaces:
+        subject = f"{surface.domain}.{surface.collection}"
+        try:
+            served = {c.key: c for c in registry.get(surface.domain).collections()}
+        except Exception as exc:  # noqa: BLE001 - an adapter that raises is the finding
+            findings.append(
+                Finding(
+                    "drift",
+                    surface.domain,
+                    subject,
+                    f"the adapter raised {type(exc).__name__}: {exc}",
+                )
+            )
+            continue
+        collection = served.get(surface.collection)
+        sources = surface.count(root, vault)
+        if collection is None:
+            findings.append(
+                Finding(
+                    "warn",
+                    surface.domain,
+                    subject,
+                    f"the page serves {sorted(served) or 'no collections'}, "
+                    f"not {surface.collection!r}",
+                )
+            )
+        elif sources and not collection.count.value and surface.diagnostic:
+            findings.append(
+                Finding(
+                    "drift",
+                    surface.domain,
+                    subject,
+                    f"{sources} {surface.sources}, and the page read none of them: "
+                    "the shape it parses is not the shape on disk",
+                )
+            )
+        else:
+            findings.append(
+                Finding(
+                    "info",
+                    surface.domain,
+                    subject,
+                    f"{sources} {surface.sources}; the page reads "
+                    f"{collection.count.value}",
+                )
+            )
+    return findings
+
+
 def _check_jobs(root: Path) -> list[Finding]:
     """Run the cron adapter's own loader over ``jobs.json``.
 
@@ -419,13 +636,16 @@ def _version_hint(con: sqlite3.Connection, source: str) -> str:
 
 
 def inspect(
-    needs: Sequence[TableNeed] | None = None, home: Path | None = None
+    needs: Sequence[TableNeed] | None = None,
+    home: Path | None = None,
+    vault_root: Path | None = None,
 ) -> Report:
     """Read every store in the contract and report what no longer matches.
 
     Args:
         needs: Tables to check; defaults to :func:`contract`.
         home: Hermes home or profile directory.
+        vault_root: Vault for the file-format check; ``None`` uses the domain's default.
 
     Returns:
         A :class:`Report`; ``report.ok`` is ``False`` when something declared is gone.
@@ -461,6 +681,7 @@ def inspect(
         con.close()
 
     findings.extend(_check_jobs(root))
+    findings.extend(_check_files(root, vault_root))
     hints["Hermes root"] = str(root)
     return Report(root, tuple(stores), tuple(findings), hints)
 
@@ -546,6 +767,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hermes home or profile directory (default: $HERMES_HOME, else ~/.hermes)",
     )
     parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="Obsidian vault to check (default: $HERMES_VAULT, else the vault's own)",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="emit the report as JSON and nothing else"
     )
     parser.add_argument(
@@ -566,7 +793,7 @@ def main(argv: list[str] | None = None) -> int:
         ``0`` when nothing declared is missing, ``1`` when something is.
     """
     args = build_parser().parse_args(argv)
-    report = inspect(home=args.hermes_home)
+    report = inspect(home=args.hermes_home, vault_root=args.vault)
     if args.quiet:
         return 0 if report.ok else 1
     print(as_json(report) if args.json else render(report))
