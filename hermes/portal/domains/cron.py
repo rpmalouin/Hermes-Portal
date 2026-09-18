@@ -44,6 +44,7 @@ from ..sources import (
     read_text,
     select_columns,
     snippet,
+    to_datetime,
     truncate,
 )
 from .base import SnapshotDomain
@@ -295,24 +296,19 @@ class CronDomain(SnapshotDomain[None]):
             started = _get(row, "started_at", None)
             finished = _get(row, "finished_at", None)
             duration = None
-            try:
-                if started and finished:
-                    duration = float(finished) - float(started)
-            except (TypeError, ValueError):
-                duration = None
+            began, ended = to_datetime(started), to_datetime(finished)
+            if began is not None and ended is not None:
+                duration = (ended - began).total_seconds()
             job_key = str(_get(row, "job_id", "?"))
             records.append(
                 Record(
                     id=str(_get(row, "id")),
                     title=names.get(job_key, job_key),
                     href=detail_url("cron", job_key) if job_key != "?" else "",
-                    subtitle=f"{fmt_time(started)} · {_get(row, 'status')} · "
-                    f"{fmt_duration(duration)}",
-                    badges=(
-                        str(_get(row, "status")),
-                        str(_get(row, "source")),
-                        fmt_duration(duration),
-                    ),
+                    subtitle=f"{fmt_time(started)} · {_get(row, 'status')}"
+                    + (f" · {fmt_duration(duration)}" if duration is not None else ""),
+                    badges=(str(_get(row, "status")), str(_get(row, "source")))
+                    + ((fmt_duration(duration),) if duration is not None else ()),
                     links=((detail_url("cron", job_key), "Job"),),
                     fields=(
                         ("job", names.get(job_key, job_key)),

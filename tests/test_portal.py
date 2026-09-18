@@ -826,6 +826,43 @@ class TestCronDomain(unittest.TestCase):
             count_map(overview.extra_counts)["rows in cron/executions.db"], 3
         )
 
+    def test_a_run_whose_stamps_are_iso_strings_still_reports_a_duration(self) -> None:
+        """cron/executions.db writes ISO-8601 stamps; the fixture only ever used epoch.
+
+        float() on an ISO string raises, and the old code caught that and
+        to None, so every run on the live portal showed "—" for its length and nothing
+        failed. This is the shape the store actually writes.
+        """
+        con = sqlite3.connect(self.root / "cron" / "executions.db")
+        start, finish = (
+            "2026-09-16T12:27:56.323952-04:00",
+            "2026-09-16T12:27:57.136095-04:00",
+        )
+        con.execute(
+            "update executions set started_at = ?, finished_at = ? where rowid = "
+            "(select min(rowid) from executions)",
+            (start, finish),
+        )
+        con.commit()
+        con.close()
+        self.domain.forget()
+        runs = self.domain.collections()[1]
+        row = next(r for r in runs.records if "812ms" in r.subtitle)
+        self.assertIn("812ms", row.badges)
+        self.assertNotIn("—", row.badges)
+
+    def test_a_run_with_no_duration_shows_no_dash_pill(self) -> None:
+        """An em-dash in a pill reads as a dead button, so a run whose
+        length is unknown shows no pill at all."""
+        con = sqlite3.connect(self.root / "cron" / "executions.db")
+        con.execute("update executions set finished_at = null, status = 'running'")
+        con.commit()
+        con.close()
+        self.domain.forget()
+        for row in self.domain.collections()[1].records:
+            self.assertNotIn("—", row.badges)
+            self.assertNotIn("—", row.subtitle)
+
     def test_runs_collection_and_incidents(self) -> None:
         runs = self.domain.collections()[1]
         self.assertEqual(runs.count.value, 3)

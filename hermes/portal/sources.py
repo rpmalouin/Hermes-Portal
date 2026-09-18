@@ -336,20 +336,36 @@ def read_text(path: Path, limit: int = 4000) -> tuple[str, bool, str]:
     return raw, False, ""
 
 
-def fmt_time(timestamp: float | str | None) -> str:
-    """Format a Unix timestamp (or ISO string) for display, in local time."""
+def to_datetime(timestamp: float | str | None) -> dt.datetime | None:
+    """A stamp as an aware datetime, or None if it is not a stamp at all.
+
+    Both shapes live in these stores, sometimes in the same column: cron's
+    ``executions.db`` writes ISO-8601 strings while older rows and other stores hold
+    epoch seconds.  Every reader must accept both -- reading one shape with ``float()``
+    is what made every cron run report a missing duration, because the ValueError was
+    caught and the row silently lost its length instead of the call failing.
+    """
     if timestamp is None or timestamp == "":
-        return "—"
-    moment: dt.datetime
+        return None
     try:
         moment = dt.datetime.fromtimestamp(float(timestamp), tz=dt.UTC)
     except (TypeError, ValueError):
         try:
             moment = dt.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
         except ValueError:
-            return str(timestamp)
+            return None
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=dt.UTC)
+    return moment
+
+
+def fmt_time(timestamp: float | str | None) -> str:
+    """Format a Unix timestamp (or ISO string) for display, in local time."""
+    if timestamp is None or timestamp == "":
+        return "—"
+    moment = to_datetime(timestamp)
+    if moment is None:
+        return str(timestamp)
     return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
