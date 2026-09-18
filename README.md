@@ -3,7 +3,7 @@
 [![tests](https://github.com/rpmalouin/Hermes-Portal/actions/workflows/tests.yml/badge.svg)](https://github.com/rpmalouin/Hermes-Portal/actions/workflows/tests.yml)
 
 Two standard-library-only Python halves that grew into one repository: **the Hermes
-Portal** — a read-only, ten-domain drill-down over everything the running Hermes agent
+Portal** — a read-only, eleven-domain drill-down over everything the running Hermes agent
 keeps — and the **skill framework** it grew out of, for discovering, registering and
 running *skills* (self-contained Python programs described by a `skill.json` manifest).
 
@@ -57,20 +57,23 @@ hermes/
       plugins.py     plugin manifests, kinds and requirements -- never imported
       vault.py       Obsidian notes: backlinks, tags, tasks, the Kanban board
       graph.py       the code graph: communities, risk, callers, flows
+      agents.py      the profiles: their stores, activity, cron and heartbeats
 tests/
   __init__.py
   test_smoke.py      48 tests, the framework (manifest, loader, registry, executor)
   test_skill_trees.py 23 tests, the skill data layer on a fake Hermes tree
-  test_portal.py     67 tests, the portal, routing, sources, the skills gallery
-  test_portal_domains.py 48 tests, usage/health/logs/cron + registry invariants
-  test_portal_heavy.py 56 tests, the vault and the code graph
+  test_portal.py     88 tests, the portal, routing, sources, the skills gallery
+  test_portal_domains.py 50 tests, usage/health/logs/cron + registry invariants
+  test_portal_heavy.py 65 tests, the vault and the code graph
   test_portal_ui.py  63 tests, favourites, theme, palette and the box tiles
   test_portal_memory.py 37 tests, the memory files and their budgets
   test_portal_plugins.py 38 tests, plugin discovery (and never running one)
   test_portal_fts.py 30 tests, message search: queries, excerpts, fallbacks
   test_portal_memory_history.py 22 tests, older copies of the memory files
-  432 in total, plus the security suite: Host checking, headers, symlink
-  containment, manifest path safety and scrubbed error text
+  test_portal_doctor.py 32 tests, the doctor: the declared contract, the file shapes
+  test_portal_agents.py 22 tests, the profiles as agents: the set, the roll-up, cron
+  518 in total, and the security suite lives inside them: Host checking, headers,
+  symlink containment, manifest path safety and scrubbed error text
 README.md           why it exists, how to use it, and the rules it runs on
 pyproject.toml      packaging: setuptools, `hermes` console script, ruff config
 LICENSE             MIT
@@ -85,10 +88,10 @@ indexes; its schedule in `jobs.json` and `executions.db`; its spend in a column 
 sessions table; its health in launchd, heartbeats and a ticker file; its logs in two
 directories; what it remembers about you in `MEMORY.md` and `USER.md` per profile; its
 extensions in 105 plugin manifests; your notes in an Obsidian vault; and the shape of its
-own code in a 2.5 GB code graph. Ten sources, ten formats, and no single place to look.
+own code in a 2.5 GB code graph. Eleven sources, several formats, and no single place to look.
 
 **The Hermes Portal is that place.** It answers one question well — *what is in there, and
-can I go deeper?* — for all ten at once, under four refusals that shape everything else:
+can I go deeper?* — for all eleven at once, under four refusals that shape everything else:
 
 * **Read-only over live data.** SQLite is opened `mode=ro` with `query_only`; files are
   read from the end; probes are GETs. The portal never writes to anything Hermes owns, so
@@ -131,7 +134,7 @@ anything you can see, you can also fetch:
 | Where | What |
 | --- | --- |
 | `/` | the index: every domain's headline counts, favourites, the skill tiles |
-| `/skills` `/sessions` `/cron` `/usage` `/health` `/logs` `/memory` `/plugins` `/vault` `/graph` | ten domains, one page each, filterable and drillable |
+| `/skills` `/sessions` `/cron` `/usage` `/health` `/logs` `/memory` `/plugins` `/vault` `/graph` `/agents` | eleven domains, one page each, filterable and drillable |
 | `/<domain>/<id>` | one record, plus the collections behind it (a session's messages, a job's runs) |
 | `/search?q=…` | cross-domain search; messages go through the FTS indexes |
 | `/favorites` | the records you starred — the one thing the portal writes |
@@ -443,8 +446,9 @@ it.
 ### When Hermes changes
 
 The portal reads a small, **declared** surface: the columns its adapters name, across six
-tables in `state.db` and `cron/executions.db`, the tables the code graph keeps, and
-`cron/jobs.json`. Hermes grows that surface additively -- `SCHEMA_SQL` is its single source
+tables in `state.db` and `cron/executions.db`, two tables in each agent's own `state.db`,
+the tables the code graph keeps, and every `cron/jobs.json`. Hermes grows that surface
+additively -- `SCHEMA_SQL` is its single source
 of truth and a startup reconcile ADDs any missing column -- so a column the portal asks for
 keeps working as the tables around it grow. What breaks is the other direction, and
 `doctor` finds it before a page does:
@@ -465,10 +469,13 @@ values through the same parser the pages use.
 Two limits worth knowing: the version stamps it prints are **hints, not contracts**
 (`state.db` advances `schema_version` for data migrations, so a shape change can leave it
 unmoved, and the cron store carries no stamp at all), and a green run covers the tables and
-columns above plus the file-backed pages by **count** -- memory entries, skills, plugin
-manifests, vault notes, log signatures, each held next to how many sources are on disk --
-but not what is *inside* those files (a note whose links moved, a log line's shape), and not
-value plausibility beyond whether the stamps parse. Exit code is `1` on drift.
+columns above plus the file-backed pages: each page's item count is held next to the number
+of sources on disk -- counted through the adapter's own listing, never a second walk of the
+same tree -- and the vault is sampled for the `[[` its link parser needs, so a vault that
+carries the syntax and reads no link at all is drift rather than a quietly empty page. What
+is still not covered: a log line's shape, links written in a syntax that leaves no `[[`
+behind to point at, and value plausibility beyond whether the stamps parse. Exit code is `1`
+on drift.
 
 ### What it does about being a local server holding secrets
 
@@ -498,7 +505,7 @@ a control id that is *proven* to resolve, script tags in every field that reache
 SQL and FTS injection attempts, oversize bodies, wrong media types, hostile `Host`
 headers, and a symlink carrying a canary out of the vault.
 
-Ten domains, each with collections, drill-down and search:
+Eleven domains, each with collections, drill-down and search:
 
 | Domain | Source | Reads | Headline |
 | --- | --- | --- | --- |
@@ -512,9 +519,11 @@ Ten domains, each with collections, drill-down and search:
 | graph | `.code-review-graph/graph.db` (`--graph-db`) | precomputed tables: communities, risk, flows; FTS for search | 38 communities — plus 170,971 nodes, 1.5M edges (cached count) |
 | memory | `memories/MEMORY.md` and `USER.md`, per profile, plus `config.yaml`, plus the archives under `backups/` | every entry, split on the section sign, measured against its character budget; older copies with what changed since | 6 files over 3 profiles — 42 entries; one at 2,200/2,200; 2 archived copies from 2026-08-25 |
 | plugins | `plugin.yaml` manifests under the bundled tree, `~/.hermes/plugins/`, each profile's, and `config.yaml` | names, kinds, versions, file lists, declared env vars and hooks | 105 plugins in 8 kinds; 41 declare requirements |
+| agents | the root's and each agent's own `state.db` (sessions, `gateway_heartbeats`), each agent's `cron/jobs.json` | a roll-up per profile, cron per agent, and how fresh each store is | 6 agents — plus 107 sessions, 11 cron jobs (only the root schedules any) |
 
 P0 was skills/sessions/cron; P1 added usage, health and logs; P2 the two heavy planes,
-the vault and the code graph; P5 memory; P6 plugins. Every source is read-only; the only
+the vault and the code graph; P5 memory; P6 plugins; `agents` then closed the set, naming the
+profiles the other ten read around. Every source is read-only; the only
 write in the project is a favourite.
 
 **Vault.** 763 notes totalling ~3 MB is small enough to index in one pass and keep in
@@ -561,7 +570,8 @@ third: its 528-line factory is **9** lines, and it *lost* code in the move — t
 `state: dict` cache the closure kept is now the base class's, so a whole hand-rolled
 memo layer deleted itself rather than being rewritten.
 
-**P12 finished it: all ten domains are classes.** The last four factories were the biggest
+**P12 finished it: all ten domains then in the tree are classes.** (The eleventh, `agents`,
+arrived later and was a class from its first commit.) The last four factories were the biggest
 left — `health` 486, `usage` 458, `sessions` 443, `vault` 438 — and then the two the code
 graph never ranked because they sat under its 300-line threshold: `logs` 246 and `skills`
 220. (A threshold is a floor, not an inventory: the graph orders the work, it does not
