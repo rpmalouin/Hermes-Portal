@@ -595,6 +595,30 @@ class TestSources(unittest.TestCase):
             self.assertEqual(sources.state_db(profile), root / "state.db")
             self.assertEqual(sources.cron_dir(profile), root / "cron")
 
+    def test_a_profile_that_has_run_a_job_is_not_mistaken_for_the_root(self) -> None:
+        """A profile's own ``cron/jobs.json`` is not evidence that it is the root.
+
+        Profiles are homes in their own right, so the marker cannot tell the two
+        apart -- and with one on disk, asking for the root must still answer the
+        root rather than that one profile's slice.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_hermes_root(Path(tmp))
+            profile = root / "profiles" / "worker"
+            (profile / "cron").mkdir(parents=True)
+            (profile / "cron" / "jobs.json").write_text(
+                '{"jobs": []}', encoding="utf-8"
+            )
+            (profile / "state.db").write_bytes(b"")
+            self.assertEqual(sources.hermes_root(profile), root)
+            self.assertEqual(sources.state_db(profile), root / "state.db")
+            self.assertEqual(sources.cron_dir(profile), root / "cron")
+            # With no root above it, the profile is the best answer there is.
+            orphan = Path(tmp) / "elsewhere" / "profiles" / "loose"
+            (orphan / "cron").mkdir(parents=True)
+            (orphan / "state.db").write_bytes(b"")
+            self.assertEqual(sources.hermes_root(orphan), orphan)
+
     def test_sqlite_is_opened_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "state.db"

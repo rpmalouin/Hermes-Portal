@@ -157,14 +157,23 @@ def hermes_root(home: Path | None = None) -> Path:
     ``state.db`` and ``cron/`` live at the root (``~/.hermes``) while a live
     session's ``$HERMES_HOME`` points at ``~/.hermes/profiles/<name>``, so
     adapters ask here instead of guessing which one they were handed.
+
+    A profile is a Hermes home in its own right -- its own ``state.db``,
+    ``cron/`` and ``memories/`` -- and one that has run a scheduled job has its
+    own ``cron/jobs.json``, which was the marker this used to rely on to tell the
+    two apart.  So when the directory handed in sits under ``profiles/``, only the
+    root above it is considered: answering with one profile's slice when the caller
+    asked for the root is the mistake this function exists to prevent.
     """
     base = Path(home).expanduser() if home is not None else hermes_home()
-    for candidate in (base, base.parent.parent, base.parent):
-        # A profile carries its own state.db and cron/ dir, so `cron/jobs.json`
-        # is the marker that actually separates the root from a profile.
+    if base.parent.name == "profiles":
+        candidates: tuple[Path, ...] = (base.parent.parent,)
+    else:
+        candidates = (base, base.parent.parent, base.parent)
+    for candidate in candidates:
         if (candidate / "cron" / "jobs.json").is_file():
             return candidate
-    for candidate in (base, base.parent.parent, base.parent):
+    for candidate in candidates:
         if (candidate / "state.db").exists():
             return candidate
     return base
