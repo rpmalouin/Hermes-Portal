@@ -622,10 +622,10 @@ class RegistryTestCase(unittest.TestCase):
 class GraphNodePageTestCase(unittest.TestCase):
     """The node page, now a module of its own (`graph_node`).
 
-    None of this was covered while the page was two methods and a nested closure inside
-    ``GraphDomain`` -- which is why the split was worth doing: ``edge_collection`` is
-    callable by name now, so a section can be asked about directly instead of through a
-    whole page.
+    The page's results were already covered through the registry -- the record's fields,
+    the four section keys, a missing node.  What the move gave names to is the machinery
+    underneath: the lookup on its own, each section's definition and badges, a zero kept
+    beside a real count, and a store that will not open.
     """
 
     @classmethod

@@ -5,9 +5,14 @@ risky nodes, the most-called nodes and the flows.  This module is the page for a
 *single* node: the record behind ``/graph/<qualified name>`` and the sections under it
 (edges out, edges in, the flows through it, the community it was filed under).
 
-It is separate because that concern had grown into the largest method in the file,
-holding its only nested closure -- and a helper nobody can call by name is a helper no
-test can reach: none of this was covered before the move.
+It is separate because that concern had grown into the largest method in the file --
+117 lines of `detail_sections` -- holding its only nested closure, and because a helper
+nobody can call by name is a helper no test can reach *on its own*.  The page's
+**results** were covered through the registry all along: the record's fields, the four
+section keys, the community it was filed under, and a node the graph does not have.
+What the move gave names to is the machinery underneath -- the lookup by itself, each
+section's definition and badges, the branch that hangs a failed query's notes off the
+first section, a zero kept beside a real count, and a store that will not open.
 
 The seam is a typed one: :class:`NodeStore` names exactly the three things a node page
 needs from the domain, so this module cannot quietly grow a dependency on the rest of
